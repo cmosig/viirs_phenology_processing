@@ -79,7 +79,7 @@ PATH_TO_FILES = join(ROOT_PATH, "e4ftl01.cr.usgs.gov/VIIRS/VNP22Q2.001")
 year_folder_names = sorted(listdir(PATH_TO_FILES))
 
 # NOTE FOR TESTING
-year_folder_names = year_folder_names[:1]
+# year_folder_names = year_folder_names[:1]
 
 # and for each year we have two data cycles, meaning 2 timesteps per year
 num_timesteps = len(year_folder_names) * 2
