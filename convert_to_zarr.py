@@ -7,6 +7,7 @@ from os.path import join
 from os import listdir
 from rasterio import crs, transform
 from tqdm import tqdm
+import dask.array
 
 # ADJUST THIS ACCORDINGLY
 ROOT_PATH = "/net/scratch/cmosig/datasets/modispheno/"
@@ -68,7 +69,6 @@ num_timesteps = len(year_folder_names) * 2
 chunk_size = 2400
 x_size = 86400
 y_size = 33600
-array_size = (num_timesteps, y_size, x_size)
 
 # this is outside all valid values
 # (can't use nan as it's a float and we have integers)
@@ -85,7 +85,13 @@ pixel_size_x = (total_xmax - total_xmin) / x_size
 pixel_size_y = (total_ymax - total_ymin) / y_size
 
 ds = xr.Dataset(
-    data_vars=None,
+    data_vars=dict([(
+        name,
+        xr.DataArray(data=dask.array.empty(
+            (len(year_folder_names) * 2, y_size, x_size),
+            dtype=DATA_VARIABLES_DTYPE[name]),
+                     dims=("time", "y", "x")),
+    ) for name in DATA_VARIABLES_DTYPE.keys()]),
     coords=dict(
         time=[
             f"{n.split('.')[0]}_cycle_{i}" for n in year_folder_names
@@ -97,12 +103,24 @@ ds = xr.Dataset(
         x=np.linspace(total_xmin, total_xmax, x_size, endpoint=False) +
         pixel_size_x / 2,
     ),
-)
+).chunk({
+    "time": 1,
+    "y": chunk_size,
+    "x": chunk_size
+})
 
 # write to zarr as template
-ds.to_zarr(join(ROOT_PATH, "/scratch/cmosig/modispheno.zarr"),
-           mode="w",
-           write_empty_chunks=False)
+ds.to_zarr(
+    join(ROOT_PATH, "/scratch/cmosig/modispheno.zarr"),
+    mode="w",
+    write_empty_chunks=False,
+    encoding=dict([(name, {
+        "write_empty_chunks": False,
+        "compressor": Blosc(cname="lz4"),
+        "_FillValue": fill_value_in_output,
+    }) for name in DATA_VARIABLES_DTYPE.keys()]),
+    compute=False,
+)
 
 # ------------------------------------------------------------
 
@@ -110,21 +128,9 @@ ds.to_zarr(join(ROOT_PATH, "/scratch/cmosig/modispheno.zarr"),
 # iterate through variables, data cycles and years
 def convert_variable(variable_name):
     # setup xr data array for the respective variable
-    data_array = xr.DataArray(
-        data=np.full(array_size,
-                     fill_value=fill_value_in_output,
-                     dtype=DATA_VARIABLES_DTYPE[variable_name]),
-        dims=("time", "y", "x"),
-        coords=ds.coords,
-    ).chunk({
-        "time": 1,
-        "y": chunk_size,
-        "x": chunk_size
-    }, )
-
-    # TODO can we do this appending year by year and cycle by cycle to not use so much RAM?
 
     pbar_years = tqdm(year_folder_names, leave=False, dynamic_ncols=True)
+    time_index = 0
 
     for year_folder in year_folder_names:
         pbar_cycle = tqdm((1, 2),
@@ -134,6 +140,23 @@ def convert_variable(variable_name):
         pbar_years.set_description(f"Processing {year_folder}")
 
         for cycle in (1, 2):
+
+            data_array = xr.DataArray(
+                data=np.full((1, y_size, x_size),
+                             fill_value=fill_value_in_output,
+                             dtype=DATA_VARIABLES_DTYPE[variable_name]),
+                dims=("time", "y", "x"),
+                coords=dict(
+                    time=[f"{year_folder.split('.')[0]}_cycle_{cycle}"],
+                    y=ds.y,
+                    x=ds.x,
+                ),
+            ).chunk({
+                "time": 1,
+                "y": chunk_size,
+                "x": chunk_size
+            }, )
+
             files = list(glob(join(PATH_TO_FILES, year_folder, "*.h5")))
             pbar_files = tqdm(files,
                               desc=f"Processing cycle {cycle}",
@@ -168,23 +191,22 @@ def convert_variable(variable_name):
                     x=slice(minx, maxx))] = np.flip(data, axis=0)
 
                 pbar_files.update()
+
+            # write to zarr
+            data_array.rename(variable_name).to_zarr(
+                join(ROOT_PATH, "/scratch/cmosig/modispheno.zarr"),
+                mode="a",
+                region=dict(time=slice(time_index, time_index + 1),
+                            x=slice(None),
+                            y=slice(None)),
+            )
+            time_index += 1
+
             pbar_cycle.update()
         pbar_years.update()
 
-    # write to zarr
-    data_array.rename(variable_name).to_zarr(join(
-        ROOT_PATH, "/scratch/cmosig/modispheno.zarr"),
-                                             mode="a",
-                                             encoding={
-                                                 variable_name: {
-                                                     "write_empty_chunks":
-                                                     False,
-                                                     "compressor":
-                                                     Blosc(cname="lz4"),
-                                                     "_FillValue":
-                                                     fill_value_in_output,
-                                                 }
-                                             })
 
-
-convert_variable("Growing_Season_Length_1")
+for variable in tqdm(DATA_VARIABLES_DTYPE,
+                     desc="Variables",
+                     dynamic_ncols=True):
+    convert_variable(variable)
