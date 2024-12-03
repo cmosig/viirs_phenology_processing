@@ -36,6 +36,28 @@ DATA_VARIABLES_DTYPE = {
     "Rate_Greenness_Increase_1": np.uint16,
 }
 
+DATA_VARIABLES_FILL_VALUE = {
+    "Date_Mid_Greenup_Phase_1": 32767,
+    "Date_Mid_Senescence_Phase_1": 32767,
+    "EVI2_Growing_Season_Area_1": 32767,
+    "EVI2_Onset_Greenness_Increase_1": 32767,
+    "EVI2_Onset_Greenness_Maximum_1": 32767,
+    "GLSP_QC_1": 255,
+    "Greenness_Agreement_Growing_Season_1": 255,
+    "Growing_Season_Length_1": 32767,
+    "Onset_Greenness_Decrease_1": 32767,
+    "Onset_Greenness_Increase_1": 32767,
+    "Onset_Greenness_Maximum_1": 32767,
+    "Onset_Greenness_Minimum_1": 32767,
+    "PGQ_Growing_Season_1": 255,
+    "PGQ_Onset_Greenness_Decrease_1": 255,
+    "PGQ_Onset_Greenness_Increase_1": 255,
+    "PGQ_Onset_Greenness_Maximum_1": 255,
+    "PGQ_Onset_Greenness_Minimum_1": 255,
+    "Rate_Greenness_Decrease_1": 32767,
+    "Rate_Greenness_Increase_1": 32767,
+}
+
 # ------------------------------------------------------------
 
 PRODUCT_CRS = crs.CRS.from_string("""PROJCS["unnamed",\
@@ -72,7 +94,6 @@ y_size = 33600
 
 # this is outside all valid values
 # (can't use nan as it's a float and we have integers)
-fill_value_in_output = 32767
 
 # as derived from the metadata
 total_xmin = -20015109.354
@@ -117,7 +138,7 @@ ds.to_zarr(
     encoding=dict([(name, {
         "write_empty_chunks": False,
         "compressor": Blosc(cname="lz4"),
-        "_FillValue": fill_value_in_output,
+        "_FillValue": DATA_VARIABLES_FILL_VALUE[name],
     }) for name in DATA_VARIABLES_DTYPE.keys()]),
     compute=False,
 )
@@ -142,9 +163,10 @@ def convert_variable(variable_name):
         for cycle in (1, 2):
 
             data_array = xr.DataArray(
-                data=np.full((1, y_size, x_size),
-                             fill_value=fill_value_in_output,
-                             dtype=DATA_VARIABLES_DTYPE[variable_name]),
+                data=np.full(
+                    (1, y_size, x_size),
+                    fill_value=DATA_VARIABLES_FILL_VALUE[variable_name],
+                    dtype=DATA_VARIABLES_DTYPE[variable_name]),
                 dims=("time", "y", "x"),
                 coords=dict(
                     time=[f"{year_folder.split('.')[0]}_cycle_{cycle}"],
