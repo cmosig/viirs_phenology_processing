@@ -122,6 +122,8 @@ def convert_variable(variable_name):
         "x": chunk_size
     }, )
 
+    # TODO can we do this appending year by year and cycle by cycle to not use so much RAM?
+
     pbar_years = tqdm(year_folder_names, leave=False, dynamic_ncols=True)
 
     for year_folder in year_folder_names:
@@ -163,7 +165,7 @@ def convert_variable(variable_name):
                 data_array.loc[dict(
                     time=f"{year_folder.split('.')[0]}_cycle_{cycle}",
                     y=slice(miny, maxy),
-                    x=slice(minx, maxx))] = data
+                    x=slice(minx, maxx))] = np.flip(data, axis=0)
 
                 pbar_files.update()
             pbar_cycle.update()
@@ -171,7 +173,7 @@ def convert_variable(variable_name):
 
     # write to zarr
     data_array.rename(variable_name).to_zarr(join(
-        ROOT_PATH, "/scratch/cmosig/modispheno_new.zarr"),
+        ROOT_PATH, "/scratch/cmosig/modispheno.zarr"),
                                              mode="a",
                                              encoding={
                                                  variable_name: {
