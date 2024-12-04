@@ -15,47 +15,47 @@ ROOT_PATH = "/net/scratch/cmosig/datasets/modispheno/"
 # these are all available variables
 # data types read from manual
 DATA_VARIABLES_DTYPE = {
-    "Date_Mid_Greenup_Phase_1": np.uint16,
-    "Date_Mid_Senescence_Phase_1": np.uint16,
-    "EVI2_Growing_Season_Area_1": np.uint16,
-    "EVI2_Onset_Greenness_Increase_1": np.uint16,
-    "EVI2_Onset_Greenness_Maximum_1": np.uint16,
-    "GLSP_QC_1": np.uint8,
-    "Greenness_Agreement_Growing_Season_1": np.uint8,
-    "Growing_Season_Length_1": np.uint16,
-    "Onset_Greenness_Decrease_1": np.uint16,
-    "Onset_Greenness_Increase_1": np.uint16,
-    "Onset_Greenness_Maximum_1": np.uint16,
-    "Onset_Greenness_Minimum_1": np.uint16,
-    "PGQ_Growing_Season_1": np.uint8,
-    "PGQ_Onset_Greenness_Decrease_1": np.uint8,
-    "PGQ_Onset_Greenness_Increase_1": np.uint8,
-    "PGQ_Onset_Greenness_Maximum_1": np.uint8,
-    "PGQ_Onset_Greenness_Minimum_1": np.uint8,
-    "Rate_Greenness_Decrease_1": np.uint16,
-    "Rate_Greenness_Increase_1": np.uint16,
+    "Date_Mid_Greenup_Phase": np.uint16,
+    "Date_Mid_Senescence_Phase": np.uint16,
+    "EVI2_Growing_Season_Area": np.uint16,
+    "EVI2_Onset_Greenness_Increase": np.uint16,
+    "EVI2_Onset_Greenness_Maximum": np.uint16,
+    "GLSP_QC": np.uint8,
+    "Greenness_Agreement_Growing_Season": np.uint8,
+    "Growing_Season_Length": np.uint16,
+    "Onset_Greenness_Decrease": np.uint16,
+    "Onset_Greenness_Increase": np.uint16,
+    "Onset_Greenness_Maximum": np.uint16,
+    "Onset_Greenness_Minimum": np.uint16,
+    "PGQ_Growing_Season": np.uint8,
+    "PGQ_Onset_Greenness_Decrease": np.uint8,
+    "PGQ_Onset_Greenness_Increase": np.uint8,
+    "PGQ_Onset_Greenness_Maximum": np.uint8,
+    "PGQ_Onset_Greenness_Minimum": np.uint8,
+    "Rate_Greenness_Decrease": np.uint16,
+    "Rate_Greenness_Increase": np.uint16,
 }
 
 DATA_VARIABLES_FILL_VALUE = {
-    "Date_Mid_Greenup_Phase_1": 32767,
-    "Date_Mid_Senescence_Phase_1": 32767,
-    "EVI2_Growing_Season_Area_1": 32767,
-    "EVI2_Onset_Greenness_Increase_1": 32767,
-    "EVI2_Onset_Greenness_Maximum_1": 32767,
-    "GLSP_QC_1": 255,
-    "Greenness_Agreement_Growing_Season_1": 255,
-    "Growing_Season_Length_1": 32767,
-    "Onset_Greenness_Decrease_1": 32767,
-    "Onset_Greenness_Increase_1": 32767,
-    "Onset_Greenness_Maximum_1": 32767,
-    "Onset_Greenness_Minimum_1": 32767,
-    "PGQ_Growing_Season_1": 255,
-    "PGQ_Onset_Greenness_Decrease_1": 255,
-    "PGQ_Onset_Greenness_Increase_1": 255,
-    "PGQ_Onset_Greenness_Maximum_1": 255,
-    "PGQ_Onset_Greenness_Minimum_1": 255,
-    "Rate_Greenness_Decrease_1": 32767,
-    "Rate_Greenness_Increase_1": 32767,
+    "Date_Mid_Greenup_Phase": 32767,
+    "Date_Mid_Senescence_Phase": 32767,
+    "EVI2_Growing_Season_Area": 32767,
+    "EVI2_Onset_Greenness_Increase": 32767,
+    "EVI2_Onset_Greenness_Maximum": 32767,
+    "GLSP_QC": 255,
+    "Greenness_Agreement_Growing_Season": 255,
+    "Growing_Season_Length": 32767,
+    "Onset_Greenness_Decrease": 32767,
+    "Onset_Greenness_Increase": 32767,
+    "Onset_Greenness_Maximum": 32767,
+    "Onset_Greenness_Minimum": 32767,
+    "PGQ_Growing_Season": 255,
+    "PGQ_Onset_Greenness_Decrease": 255,
+    "PGQ_Onset_Greenness_Increase": 255,
+    "PGQ_Onset_Greenness_Maximum": 255,
+    "PGQ_Onset_Greenness_Minimum": 255,
+    "Rate_Greenness_Decrease": 32767,
+    "Rate_Greenness_Increase": 32767,
 }
 
 # ------------------------------------------------------------
@@ -161,7 +161,6 @@ def convert_variable(variable_name):
         pbar_years.set_description(f"Processing {year_folder}")
 
         for cycle in (1, 2):
-
             data_array = xr.DataArray(
                 data=np.full(
                     (1, y_size, x_size),
@@ -192,13 +191,13 @@ def convert_variable(variable_name):
 
                 f = h5netcdf.File(file, phony_dims='access')
 
-                if variable_name not in f[
+                if f"{variable_name}_{cycle}" not in f[
                         f"/HDFEOS/GRIDS/Cycle {cycle}/Data Fields"]:
                     pbar_files.update()
                     continue
 
                 data = f[
-                    f"/HDFEOS/GRIDS/Cycle {cycle}/Data Fields/{variable_name}"][:]
+                    f"/HDFEOS/GRIDS/Cycle {cycle}/Data Fields/{variable_name}_{cycle}"][:]
 
                 # read chunk transform from metadata
                 # black magic
@@ -228,7 +227,7 @@ def convert_variable(variable_name):
         pbar_years.update()
 
 
-for variable in tqdm(DATA_VARIABLES_DTYPE,
-                     desc="Variables",
-                     dynamic_ncols=True):
+pbar_var = tqdm(DATA_VARIABLES_DTYPE, desc="Variables", dynamic_ncols=True)
+for variable in pbar_var:
+    pbar_var.set_description(f"Processing {variable}")
     convert_variable(variable)
