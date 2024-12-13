@@ -33,8 +33,9 @@ def process_chunk(index):
 
     ds = xr.open_zarr("/scratch/cmosig/modispheno.zarr/",
                       chunks=None)[variables_of_interest]
-    chunk = ds.sel(x=slice(x, x + aggregation_factor),
-                   y=slice(y, y + aggregation_factor)).load()
+
+    chunk = ds.isel(y=slice(y, y + aggregation_factor),
+                    x=slice(x, x + aggregation_factor))
 
     if all([chunk[var].isnull().all().item()
             for var in variables_of_interest]):
@@ -158,7 +159,7 @@ pixel_size_y_agg = (total_ymax - total_ymin) / modis_y_size_agg
 out_path = "/scratch/cmosig/modispheno_aggregated.zarr"
 
 # create zarr store for the results
-xr.DataArray(
+ds = xr.DataArray(
     data=dask.array.empty((modis_y_size_agg, modis_x_size_agg, 366),
                           dtype=np.uint16),
     dims=("y", "x", "day"),
@@ -169,7 +170,8 @@ xr.DataArray(
         + pixel_size_x_agg / 2,
         day=np.arange(366),
     ),
-).to_dataset(name="phenology").to_zarr(out_path)
+)
+ds.to_dataset(name="phenology").to_zarr(out_path)
 
 
 def index_generator():
@@ -188,12 +190,16 @@ def callback(ret):
     y, x, result = ret
     if result is not None:
         # write the results to the zarr store
-
-        data_array.rename("phenology_doy_vector").to_zarr(
-            join(ROOT_PATH, out_path),
-            mode="a",
-            region=dict(y=slice(y, y + aggregation_factor),
-                        x=slice(x, x + aggregation_factor)),
+        xr.DataArray(
+            data=result.reshape(1, 1, 366),
+            dims=("y", "x", "day"),
+            coords=dict(day=np.arange(366),
+                        y=[ds.y.values[y // aggregation_factor]],
+                        x=[ds.x.values[x // aggregation_factor]]),
+        ).to_dataset(name="phenology").to_zarr(
+            out_path,
+            mode="r+",
+            region="auto",
         )
 
     # process the chunk
