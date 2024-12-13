@@ -1,15 +1,19 @@
 from rasterio import crs, transform, windows, warp
+from os.path import join
 import numpy as np
 import rasterio
 from tqdm import tqdm
 from parallel import paral
 from scipy import ndimage
+from multiprocessing.pool import Pool
+import random
+from glob import glob
 
 path_to_worldcover = "/net/scratch/cmosig/datasets/worldcover_modis_crs.vrt"
 out_path = "/net/scratch/cmosig/datasets/worldcover_aggregated.tif"
 
 # this is relative to the modis grid
-reprojection_factor = 200
+reprojection_factor = 100
 
 # y, x
 modis_shape = (33600, 86400)
@@ -44,12 +48,12 @@ def compute_forest_fraction(index):
     with rasterio.open(
             "/net/scratch/cmosig/datasets/worldcover_modis_crs.vrt") as dr:
         if not dr.dataset_mask(window=window).any():
-            return None
+            return (index, None)
 
         forest_mask = (dr.read(1, window=window, boundless=True) == 10)
 
         if not forest_mask.any():
-            return None
+            return (index, None)
 
         assert forest_mask.shape[0] == forest_mask.shape[1]
         widthheight = forest_mask.shape[0]
@@ -77,56 +81,97 @@ def compute_forest_fraction(index):
             resampling=warp.Resampling.average,
         )
 
-        return return_array
+        return (index, return_array)
 
 
 worldcover_transform = rasterio.open(path_to_worldcover).transform
 
-with rasterio.open(out_path,
-                   'w',
-                   driver='GTiff',
-                   height=modis_shape[0],
-                   width=modis_shape[1],
-                   count=1,
-                   dtype=rasterio.float32,
-                   crs=modis_crs,
-                   transform=target_transform,
-                   compress="DEFLATE",
-                   tiled="YES") as dst:
+temp_agg_dir = "/net/scratch/cmosig/datasets/temp_agg_save"
 
-    pbar = tqdm(total=modis_shape[0] // reprojection_factor, desc="yi index")
-    for yi in range(0, modis_shape[0] // reprojection_factor):
 
-        indices = []
+def get_indices():
+    yis = list(range(0, modis_shape[0] // reprojection_factor))
+    random.shuffle(yis)
+    for yi in yis:
         for xi in range(0, modis_shape[1] // reprojection_factor):
-            indices.append((yi, xi))
+            yield (yi, xi)
 
-        print("computing results...")
-        fractions_result = paral(compute_forest_fraction,
-                                 iters=[indices],
-                                 num_cores=16)
 
-        print("computed results. now writing")
-        for xi in range(0, modis_shape[1] // reprojection_factor):
+def reproject_and_to_numpy():
+    pool = Pool(60)
+    pbar = tqdm(total=(modis_shape[0] // reprojection_factor) *
+                (modis_shape[1] // reprojection_factor),
+                desc="index")
 
-            win = windows.Window(
-                xi * reprojection_factor,
-                modis_shape[0] - ((yi + 1) * reprojection_factor),
-                reprojection_factor, reprojection_factor)
+    results = pool.imap_unordered(compute_forest_fraction, get_indices())
 
-            # agg_grid[modis_shape[0] -
-            #          ((yi + 1) * reprojection_factor):modis_shape[0] -
-            #          (yi * reprojection_factor),
-            #          xi * reprojection_factor:(xi + 1) *
-            #          reprojection_factor] = fractions_result[i]
+    for result in results:
+        save_tile_numpy(result)
 
-            if fractions_result[xi] is not None:
-                dst.write(fractions_result[xi], window=win, indexes=1)
-            else:
-                dst.write(np.zeros((reprojection_factor, reprojection_factor),
-                                   dtype=np.float32),
-                          window=win,
-                          indexes=1)
 
-        print("completed writing")
+def numpy_to_geotiff():
+
+    # init numpy array for the entire area
+    outarr = np.zeros((modis_shape[0], modis_shape[1]), dtype=np.float32)
+
+    files_to_load = glob(join(temp_agg_dir, "*.npy"))
+
+    for file in tqdm(files_to_load, desc="loading"):
+        yi, xi = file.split("/")[-1].split(".")[0].split("_")
+        yi, xi = int(yi), int(xi)
+        outarr[modis_shape[0] - ((yi+1) * reprojection_factor):modis_shape[0] -
+               (yi * reprojection_factor),
+               xi * reprojection_factor:(xi + 1) *
+               reprojection_factor] = np.load(file)
+
+    open_params = dict(
+        driver='GTiff',
+        height=modis_shape[0],
+        width=modis_shape[1],
+        count=1,
+        dtype=rasterio.float32,
+        crs=modis_crs,
+        transform=target_transform,
+        compress="DEFLATE",
+        tiled="YES",
+        nodata=0,
+    )
+
+    # initialize the file
+    dr = rasterio.open(out_path, 'w', **open_params)
+    dr.write(outarr, 1)
+    dr.close()
+
+
+def save_tile_numpy(result):
+
+    index, fractions_result = result
+    yi, xi = index
+
+    if fractions_result is not None:
+        np.save(join(temp_agg_dir, f"{yi}_{xi}.npy"), fractions_result)
+
+    pbar.update(1)
+
+
+def save_tile(result):
+    index, fractions_result = result
+    yi, xi = index
+
+    with rasterio.open(out_path, 'r+') as dst:
+        win = windows.Window(xi * reprojection_factor,
+                             modis_shape[0] - ((yi + 1) * reprojection_factor),
+                             reprojection_factor, reprojection_factor)
+
+        if fractions_result is not None:
+            dst.write(fractions_result, window=win, indexes=1)
+        else:
+            dst.write(np.zeros((reprojection_factor, reprojection_factor),
+                               dtype=np.float32),
+                      window=win,
+                      indexes=1)
+
         pbar.update(1)
+
+
+numpy_to_geotiff()
