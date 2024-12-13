@@ -3,7 +3,6 @@ from os.path import join
 import numpy as np
 import rasterio
 from tqdm import tqdm
-from parallel import paral
 from scipy import ndimage
 from multiprocessing.pool import Pool
 import random
