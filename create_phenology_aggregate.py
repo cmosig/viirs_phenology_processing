@@ -1,4 +1,5 @@
 import xarray as xr
+from numcodecs import Blosc
 import numpy as np
 from rasterio import windows, crs
 import rasterio
@@ -24,8 +25,8 @@ PARAMETER["false_northing",0], \
 UNIT["Meter",1]]""")
 
 
-def process_chunk(index):
-    y, x = index
+def process_chunk(inp):
+    y, x, forest_mask = inp
 
     # required variables are:
     # - Onset_Greenness_Maximum
@@ -37,8 +38,11 @@ def process_chunk(index):
     chunk = ds.isel(y=slice(y, y + aggregation_factor),
                     x=slice(x, x + aggregation_factor))
 
+    # print(y, x, "chunk", chunk.x.min().item(), chunk.y.min().item(), chunk.x.max().item(), chunk.y.max().item())
+
     if all([chunk[var].isnull().all().item()
             for var in variables_of_interest]):
+        # print("opening dataset, but empty chunk")
         return (y, x, None)
 
     # compute the offset dates as per the documentation
@@ -55,14 +59,6 @@ def process_chunk(index):
     xmax = chunk.x.max() + pixel_size_x / 2
     ymin = chunk.y.min() - pixel_size_y / 2
     ymax = chunk.y.max() + pixel_size_y / 2
-
-    forest_mask = None
-    with rasterio.open(
-            "/net/scratch/cmosig/datasets/worldcover_aggregated.tif") as dr:
-        win = windows.from_bounds(xmin, ymin, xmax, ymax, dr.transform)
-        forest_mask = dr.read(1, window=win)
-
-    forest_mask = forest_mask > 0.5
 
     # apply mask
     chunk = chunk.where(forest_mask, np.nan)
@@ -159,31 +155,70 @@ pixel_size_y_agg = (total_ymax - total_ymin) / modis_y_size_agg
 out_path = "/scratch/cmosig/modispheno_aggregated.zarr"
 
 # create zarr store for the results
-ds = xr.DataArray(
-    data=dask.array.empty((modis_y_size_agg, modis_x_size_agg, 366),
-                          dtype=np.uint16),
-    dims=("y", "x", "day"),
+ds = xr.Dataset(
+    data_vars=dict(phenology=xr.DataArray(data=dask.array.empty(
+        (modis_y_size_agg, modis_x_size_agg, 366), dtype=np.float32),
+                                          dims=("y", "x", "day"))),
     coords=dict(
         y=np.linspace(total_ymin, total_ymax, modis_y_size_agg,
                       endpoint=False) + pixel_size_y_agg / 2,
-        x=np.linspace(total_xmin, total_xmax, modis_x_size_agg, endpoint=False)
-        + pixel_size_x_agg / 2,
-        day=np.arange(366),
-    ),
+        x=np.linspace(total_xmin, total_xmax, modis_x_size_agg,
+                      endpoint=False) + pixel_size_x_agg / 2,
+        day=np.arange(366)),
 )
-ds.to_dataset(name="phenology").to_zarr(out_path)
+ds.to_zarr(out_path,
+           compute=False,
+           encoding=dict(
+               phenology={
+                   "write_empty_chunks": False,
+                   "compressor": Blosc(cname="lz4"),
+                   "_FillValue": np.nan,
+               }))
+
+pbar = tqdm(total=(modis_x_size // aggregation_factor) *
+            (modis_y_size // aggregation_factor))
 
 
 def index_generator():
     yis = list(range(0, modis_y_size, aggregation_factor))
-    random.shuffle(yis)
-    for y in yis:
-        for x in range(0, modis_x_size, aggregation_factor):
-            yield y, x
+    # random.shuffle(yis)
 
+    forest_mask = None
+    with rasterio.open(
+            "/net/scratch/cmosig/datasets/worldcover_aggregated.tif") as dr:
 
-pbar = tqdm(total=(modis_x_size // aggregation_factor) *
-            (modis_y_size // aggregation_factor))
+        for y in yis:
+            for x in range(0, modis_x_size, aggregation_factor):
+                # xmin = total_xmin + x * pixel_size_x_agg
+                # xmax = total_xmin + (x + aggregation_factor) * pixel_size_x_agg
+                # ymin = total_ymin + (modis_y_size - y) * pixel_size_y_agg
+                # ymax = total_ymin + (modis_y_size - y + aggregation_factor) * pixel_size_y_agg
+                # win = windows.from_bounds(xmin, ymin, xmax, ymax, dr.transform)
+
+                coloff = x
+                rowoff = modis_y_size - y
+                win = windows.Window(col_off=coloff,
+                                     row_off=rowoff,
+                                     width=aggregation_factor,
+                                     height=aggregation_factor)
+
+                if (dr.read_masks(1, window=win) == 0).all():
+                    pbar.update(1)
+                    continue
+
+                forest_mask = dr.read(1, window=win)
+                forest_mask = forest_mask > 0.5
+
+                # print(y, x, "rasterio", xmin, ymin, xmax, ymax)
+                # print(y, x, "rasterio", coloff, rowoff, coloff + aggregation_factor, rowoff + aggregation_factor)
+
+                # if there is not forest in the chunk, return None
+                if not forest_mask.any():
+                    # print("empty mask")
+                    pbar.update(1)
+                    continue
+
+                yield y, x, forest_mask
 
 
 def callback(ret):
@@ -202,11 +237,12 @@ def callback(ret):
             region="auto",
         )
 
-    # process the chunk
-    pbar.update(1)
-
 
 pool = Pool(60)
 results = pool.imap_unordered(process_chunk, index_generator())
 for result in results:
     callback(result)
+    pbar.update(1)
+
+# for index in index_generator():
+#     callback(process_chunk(index))
