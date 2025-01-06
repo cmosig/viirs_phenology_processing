@@ -46,12 +46,12 @@ def process_chunk(inp):
         return (y, x, None)
 
     # compute the offset dates as per the documentation
+    # and reshape for future broadcasting
     offset_dates = np.array(
         list(
             map(lambda x: -366 * (int(x.split("_")[0]) - 2000),
                 chunk.time.values))).reshape((20, 1, 1))
 
-    # 0A mask out pixels with nan where the forest cover is less than 0.5
     # get bounds and switch from center coord to actual pixel bounds
     pixel_size_x = chunk.x[1] - chunk.x[0]
     pixel_size_y = chunk.y[1] - chunk.y[0]
@@ -60,14 +60,13 @@ def process_chunk(inp):
     ymin = chunk.y.min() - pixel_size_y / 2
     ymax = chunk.y.max() + pixel_size_y / 2
 
-    # apply mask
+    # mask out pixels with nan where the forest cover is less than 0.5
     chunk = chunk.where(forest_mask, np.nan)
 
-    # 0B shift values as per documentation
+    # shift values as per documentation
     onset_max = chunk.Onset_Greenness_Maximum.values + offset_dates
     onset_dec = chunk.Onset_Greenness_Decrease.values + offset_dates
 
-    # 1 convert variables in to 1d vector for each of the timesteps
     # setup vector for intermediate results
     inter = np.zeros(
         (onset_max.shape[0] // 2, onset_max.shape[1], onset_max.shape[2], 366),
