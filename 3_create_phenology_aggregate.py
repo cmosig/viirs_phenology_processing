@@ -8,6 +8,8 @@ from tqdm import tqdm
 from multiprocessing import Pool
 from os.path import join
 import random
+from paths import DATAPATH
+from os.path import jon
 
 # Load the MODIS phenology data
 variables_of_interest = ["Onset_Greenness_Maximum", "Onset_Greenness_Decrease"]
@@ -32,7 +34,7 @@ def process_chunk(inp):
     # - Onset_Greenness_Maximum
     # - Onset_Greenness_Decrease
 
-    ds = xr.open_zarr("/scratch/cmosig/modispheno.zarr/",
+    ds = xr.open_zarr(join(DATAPATH, "modispheno.zarr"),
                       chunks=None)[variables_of_interest]
 
     chunk = ds.isel(y=slice(y, y + aggregation_factor),
@@ -151,7 +153,7 @@ total_ymax = 8895604.157333
 pixel_size_x_agg = (total_xmax - total_xmin) / modis_x_size_agg
 pixel_size_y_agg = (total_ymax - total_ymin) / modis_y_size_agg
 
-out_path = "/scratch/cmosig/modispheno_aggregated.zarr"
+out_path = join(DATAPATH, "modispheno_aggregated.zarr")
 
 # create zarr store for the results
 ds = xr.Dataset(
