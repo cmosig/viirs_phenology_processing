@@ -4,7 +4,7 @@ import numpy as np
 from scipy.interpolate import griddata
 import seaborn as sns
 from paths import DATAPATH
-from os.path import jon
+from os.path import join
 
 da = xr.open_zarr(join(DATAPATH, "modispheno_aggregated.zarr")).phenology
 print("loading data...")
@@ -19,7 +19,7 @@ x_down = x.reshape(x.shape[0] // factor, factor, x.shape[1] // factor, factor,
 x_down = x_down.sum(axis=(1, 3))
 
 # extract start, end, and middle from count curves
-thresh = np.max(x_down, axis=2, keepdims=True) * 0.5
+thresh = ((np.max(x_down, axis=2, keepdims=True) - np.min(x_down, axis=2, keepdims=True)) * 0.5) + np.min(x_down, axis=2, keepdims=True)
 binmap = (x_down > thresh)
 
 
@@ -116,7 +116,7 @@ for i in range(3):
     axes[i * 2].axis("off")
     axes[i * 2 + 1].axis("off")
 fig.tight_layout()
-fig.savefig("phenology_dates.png")
+fig.savefig("phenology_dates_v2.png")
 
 # save it as zarr
 inresx = (da.x[1] - da.x[0]).item()
@@ -143,4 +143,4 @@ daout = xr.DataArray(data=np.concatenate([cycle_dates, cin], axis=2),
                      dims=["y", "x", "var"])
 
 daout.rename("phenology40km").to_zarr(
-    join(DATAPATH, "modis_pheno_processed.zarr"))
+    join(DATAPATH, "modis_pheno_processed_v2.zarr"))
