@@ -15,6 +15,11 @@ parser.add_argument("--factor", type=int, default=4,
                     help="spatial downsample factor from the 10 km grid (default 4 -> 40 km)")
 parser.add_argument("--aggregate", default="modispheno_aggregated.zarr",
                     help="input composite from step 3 (default: %(default)s)")
+parser.add_argument("--middle", choices=("peak", "threshold"), default="peak",
+                    help=("how the middle date is placed: 'peak' (default) is the "
+                          "day most pixel-years are in leaf, 'threshold' is the "
+                          "midpoint between start and end, which v5 and earlier "
+                          "used"))
 parser.add_argument("--min-pixel-years", type=int, default=200,
                     help=("cells whose season is carried by fewer than this many "
                           "pixel-years are left to the interpolation (default: "
@@ -94,6 +99,61 @@ def get_cycle(arr):
 
 print("extracting dates...")
 cycle_dates = np.apply_along_axis(func1d=get_cycle, axis=2, arr=binmap)
+
+if args.middle == "peak":
+    # The date exists to pick the Sentinel-2 composite on which a leafless crown
+    # most likely means a dead tree, so it belongs on the day the largest share of
+    # pixel-years are in leaf, not halfway between the season bounds. On a
+    # low-contrast tropical curve the midpoint drifts off the canopy plateau: over
+    # the Amazon it sits below 80% of peak leaf-on in 20% of cells, while the peak
+    # is at 100% by construction. Temperate and boreal dates move 2-3 d, inside one
+    # composite step.
+    #
+    # Flat-topped curves have many days tied at the maximum, so the tied days are
+    # averaged on the circle rather than taking the first, which would bias early
+    # and jump between neighbouring cells.
+    #
+    # start and end stay the 50% crossings, but of the run that *contains the
+    # peak* rather than the longest run. Picking by length leaves the peak outside
+    # the kept season in 8% of Amazon cells (2.2% in SE Asia, 0% in Europe), which
+    # would put middle outside [start, end]; following the peak also replaces the
+    # length tie-break between two similar cycles with a meaningful one.
+    print("placing the date on the peak of the curve...")
+    angle = np.exp(2j * np.pi * np.arange(366) / 366.0)
+    tied = x_down >= x_down.max(axis=2, keepdims=True)
+    middle = (np.angle((tied * angle).sum(axis=2)) / (2 * np.pi)) * 366 % 366
+    peak_day = x_down.argmax(axis=2).astype(np.int32)
+
+    # walk out from the peak to the edges of its run, in row blocks to bound memory
+    start = np.zeros(binmap.shape[:2], dtype=np.float32)
+    end = np.zeros(binmap.shape[:2], dtype=np.float32)
+    found = np.zeros(binmap.shape[:2], dtype=bool)
+    # three copies, queried in the middle one: a run is at most a year long, so
+    # both its edges are inside the window even when it wraps. Two copies are not
+    # enough -- a 309-day run starting in the second copy runs off the end.
+    days = np.arange(3 * 366, dtype=np.int16)
+    for lo in range(0, binmap.shape[0], 50):
+        hi = min(lo + 50, binmap.shape[0])
+        tiled = np.concatenate([binmap[lo:hi]] * 3, axis=2)
+        opens = tiled & ~np.roll(tiled, 1, axis=2)
+        closes = tiled & ~np.roll(tiled, -1, axis=2)
+        run_start = np.maximum.accumulate(
+            np.where(opens, days, np.int16(-1)), axis=2)
+        run_end = np.minimum.accumulate(
+            np.where(closes, days + 1, np.int16(3 * 366))[:, :, ::-1],
+            axis=2)[:, :, ::-1]
+        at = (peak_day[lo:hi] + 366)[:, :, None]
+        s = np.take_along_axis(run_start, at, axis=2)[:, :, 0]
+        e = np.take_along_axis(run_end, at, axis=2)[:, :, 0]
+        ok_run = (s >= 0) & (e < 3 * 366)
+        start[lo:hi] = np.where(ok_run, s % 366, 0)
+        end[lo:hi] = np.where(ok_run, e % 366, 0)
+        found[lo:hi] = ok_run
+    # a flat curve has no run at all; those cells keep the old triple and are
+    # dropped below anyway if they are too sparse
+    cycle_dates[found] = np.stack(
+        [start, end, middle.astype(np.float32)], axis=2)[found]
+    print(f"  peak inside a run for {100 * found.mean():.1f}% of cells")
 # must follow the nansum above: nansum returns 0 for an all-NaN block, never NaN, so the
 # no-data test has to come from the pre-aggregation array instead of from x_down.
 cycle_dates[all_nan_block] = np.nan
