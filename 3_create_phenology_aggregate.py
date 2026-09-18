@@ -70,7 +70,7 @@ pixel_size_y_agg = (total_ymax - total_ymin) / modis_y_size_agg
 
 def _parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", default="modispheno_aggregated_v5.zarr",
+    parser.add_argument("--out", default="modispheno_aggregated_v6.zarr",
                         help="output zarr under DATAPATH (default: %(default)s)")
     parser.add_argument("--workers", type=int, default=48,
                         help="worker processes (default: %(default)s)")

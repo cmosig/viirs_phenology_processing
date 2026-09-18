@@ -35,10 +35,10 @@ quality flags `PGQ_*` and `GLSP_QC`, and the mid-phase dates. See
 | download | `0_download.sh` | LP DAAC | HDF tiles |
 | to zarr | `1_convert_to_zarr.py` | HDF tiles | `modispheno.zarr` (20, 33600, 86400) |
 | forest mask | `2_aggregate_world_cover.py` | WorldCover | `worldcover_aggregated.tif` (500 m tree-cover fraction) |
-| composite | `3_create_phenology_aggregate.py` | the two above | `modispheno_aggregated_v5.zarr` (1680, 4320, 366) |
+| composite | `3_create_phenology_aggregate.py` | the two above | `modispheno_aggregated_v6.zarr` (1680, 4320, 366) |
 | dates | `4_aggregate_to_dates.py` | composite | `modis_pheno_processed_v6{,_10km}.zarr` |
-| normalise | `SIDE_normalize_curve.py` | composite | `..._v5_normalized.zarr` (uint8 0-255 + `nan_mask`) |
-| gap fill | `fill_modis_phenology_nn.py` (in `sentinel_mortality/scripts/misc/`) | normalised | `..._v5_normalized_filled.zarr` |
+| normalise | `SIDE_normalize_curve.py` | composite | `..._v6_normalized.zarr` (uint8 0-255 + `nan_mask`) |
+| gap fill | `fill_modis_phenology_nn.py` (in `sentinel_mortality/scripts/misc/`) | normalised | `..._v6_normalized_filled.zarr` |
 | GeoTIFF | `export_geotiff.py` | any dates store | 6-band `.tif` |
 | QGIS | `make_qgis_project.py` | the tifs | `qgis/phenology.qgs` |
 
@@ -100,11 +100,8 @@ GCC transitions at two deciduous sites:
 
 | | camera rising 50% | our `start` | our `middle` | our `end` | camera falling 50% |
 |---|---|---|---|---|---|
-| Harvard Forest | 132 | 171 | 208 | 245 | 286 |
+| Harvard Forest | 132 | 171 | 205 | 245 | 286 |
 | Bartlett | 138 | 175 | 209 | 244 | 266 |
-
-(`middle` as of v5; in v6 it is the peak of the curve rather than the midpoint,
-which moves these two sites by 1-2 days.)
 
 ## Versions
 
@@ -116,13 +113,15 @@ as the shift in mid-season day of year at 170,707 inference-block centroids.
 | v2 -> v3 | `nansum` when block-summing (a 40 km cell no longer goes empty because one of its 16 sub-cells is), and a min-max rather than 0-max threshold | 2 d | 17% |
 | v3 -> v4 | day-of-year conversion used `366 * (year - 2000)`, over-subtracting by 9 d in 2013 growing to 16 d in 2022; cycle 2 read cycle 1's greenup as its start; the forest mask was read one cell too far south | **12 d** | **19%** |
 | v4 -> v5 | a season crossing New Year is wrapped rather than clipped at day 366 | 0 d | 0.4% |
-| v5 -> v6 | `middle` moves to the peak of the curve, and the kept run is the one containing that peak | 4 d | 10% |
+| v5 -> v6 | `middle` moves to the peak of the curve, and the kept run is the one containing that peak; the whole triple is filled from one donor | 4 d | 10% |
 
-v4 was a measurement, not a product; v5 and v6 are kept -- v6 is built from the
-v5 composite, only step 4 differs. The year-offset fix moves
-the product onto the source dates: central Germany's median source maturity is
-DOY 198, v2/v3 said 181, v5 says 198. Across six flux/phenology sites, v5
-reproduces the median source maturity and senescence within 0-3 days.
+v4 and v5 were measurements, not products: only v6 is kept, and every store
+carries that version. v3 and v5 changed the composite, v6 only step 4, so the
+composite `modispheno_aggregated_v6.zarr` is what v5 produced. The year-offset
+fix moves the product onto the source dates: central Germany's median source
+maturity is DOY 198, v2/v3 said 181, v6 says 198. Across six flux and phenology
+sites, `start` and `end` reproduce the median source maturity and senescence
+within 0-3 days.
 
 ### Why the peak (v6)
 
@@ -214,11 +213,14 @@ which is what pointed at sample size rather than high-frequency noise.
 
 ## Running it
 
+Only `modispheno_aggregated_v6_normalized_filled.zarr` is kept zipped, since that
+is the one that gets shipped; everything else is read in place.
+
 ```bash
 python 3_create_phenology_aggregate.py --workers 48            # ~4 min, ~25 GB
-python 4_aggregate_to_dates.py --aggregate modispheno_aggregated_v5.zarr --version v6             # 40 km
-python 4_aggregate_to_dates.py --aggregate modispheno_aggregated_v5.zarr --version v6 --factor 1  # 10 km
-#   --middle threshold reproduces the v5 rule; the composite is unchanged between v5 and v6
+python 4_aggregate_to_dates.py                                 # 40 km
+python 4_aggregate_to_dates.py --factor 1                      # 10 km
+#   --middle threshold reproduces the pre-v6 rule
 python SIDE_normalize_curve.py                                 # normalised curve
 python export_geotiff.py --store modis_pheno_processed_v6.zarr
 QT_QPA_PLATFORM=offscreen /usr/bin/python3 make_qgis_project.py # system python has PyQGIS

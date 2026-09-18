@@ -13,7 +13,7 @@ from os.path import join
 parser = argparse.ArgumentParser()
 parser.add_argument("--factor", type=int, default=4,
                     help="spatial downsample factor from the 10 km grid (default 4 -> 40 km)")
-parser.add_argument("--aggregate", default="modispheno_aggregated.zarr",
+parser.add_argument("--aggregate", default="modispheno_aggregated_v6.zarr",
                     help="input composite from step 3 (default: %(default)s)")
 parser.add_argument("--middle", choices=("peak", "threshold"), default="peak",
                     help=("how the middle date is placed: 'peak' (default) is the "
@@ -24,7 +24,7 @@ parser.add_argument("--min-pixel-years", type=int, default=200,
                     help=("cells whose season is carried by fewer than this many "
                           "pixel-years are left to the interpolation (default: "
                           "%(default)s; see the note in the code)"))
-parser.add_argument("--version", default="v3",
+parser.add_argument("--version", default="v6",
                     help="version tag of the output store and figure (default: %(default)s)")
 args = parser.parse_args()
 factor = args.factor

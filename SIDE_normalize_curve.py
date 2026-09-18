@@ -18,7 +18,7 @@ import xarray as xr
 from paths import DATAPATH
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--aggregate", default="modispheno_aggregated_v5.zarr",
+parser.add_argument("--aggregate", default="modispheno_aggregated_v6.zarr",
                     help="input composite under DATAPATH (default: %(default)s)")
 parser.add_argument("--out", default=None,
                     help="output name (default: the input with _normalized)")
