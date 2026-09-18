@@ -127,6 +127,7 @@ def main():
     project = QgsProject.instance()
     project.setTitle("Land-surface phenology v6 - day of year")
     root = project.layerTreeRoot()
+    crs_set = False
 
     for filename, band, name, visible in LAYERS:
         path = _local_copy(filename, args.refresh)
@@ -137,6 +138,11 @@ def main():
         project.addMapLayer(layer, False)
         node = root.addLayer(layer)
         node.setItemVisibilityChecked(visible)
+        if not crs_set:
+            # Without this the project opens with no CRS at all and QGIS asks for
+            # one; the canvas matches the data, so nothing is reprojected.
+            project.setCrs(layer.crs())
+            crs_set = True
         print(f"added {name:28s} <- {filename}")
 
     # Store sources relative to the project file, which now sits next to the

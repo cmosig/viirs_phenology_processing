@@ -25,7 +25,11 @@ from rasterio import crs, transform
 
 from paths import DATAPATH
 
-MODIS_CRS = crs.CRS.from_string("""PROJCS["unnamed",
+# Named, so QGIS shows "MODIS Sinusoidal" rather than "unnamed". There is no
+# authority code for this grid: the MODIS/VIIRS sphere is R = 6371007.181 m,
+# while ESRI:53008 uses 6371000, so it stays a custom CRS. Parameters are
+# unchanged -- this only affects how the CRS is labelled.
+MODIS_CRS = crs.CRS.from_string("""PROJCS["MODIS Sinusoidal",
 GEOGCS["Unknown datum based upon the custom spheroid",
 DATUM["Not specified (based on custom spheroid)",
 SPHEROID["Custom spheroid",6371007.181,0]],
