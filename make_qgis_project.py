@@ -11,11 +11,18 @@ date is taken from, with the 10 km store on top. The raw `middle` band (band 3,
 NaN where MODIS derived no cycle) is added below, switched off, to see what is
 measured and what is nearest-filled.
 
-Run with the system Python, which has PyQGIS:
+The GeoTIFFs are copied next to the project inside `qgis/` (6 MB for both) and
+referenced by bare filename, so a clone of this repo opens on any machine. They
+are copied from DATAPATH when missing; --refresh re-copies them.
+
+Run with the system Python, which has PyQGIS (headless needs
+QT_QPA_PLATFORM=offscreen):
     /usr/bin/python3 make_qgis_project.py
 """
 
+import argparse
 import os
+import shutil
 
 from qgis.core import (
     QgsApplication,
@@ -29,8 +36,9 @@ from qgis.PyQt.QtGui import QColor
 
 from paths import DATAPATH
 
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                   "phenology_v3.qgs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+QGIS_DIR = os.path.join(HERE, "qgis")
+OUT = os.path.join(QGIS_DIR, "phenology_v3.qgs")
 
 # matplotlib twilight, 13 stops, first == last
 TWILIGHT = [
@@ -92,7 +100,22 @@ def _cyclic_renderer(layer, band):
     return renderer
 
 
+def _local_copy(filename, refresh):
+    """The tif next to the project, copied from DATAPATH on first use."""
+    local = os.path.join(QGIS_DIR, filename)
+    if refresh or not os.path.exists(local):
+        shutil.copyfile(os.path.join(DATAPATH, filename), local)
+        print(f"copied {filename} -> qgis/")
+    return local
+
+
 def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--refresh", action="store_true",
+                    help="re-copy the GeoTIFFs from DATAPATH")
+    args = ap.parse_args()
+
+    os.makedirs(QGIS_DIR, exist_ok=True)
     QgsApplication.setPrefixPath("/usr", True)
     app = QgsApplication([], False)
     app.initQgis()
@@ -102,7 +125,7 @@ def main():
     root = project.layerTreeRoot()
 
     for filename, band, name, visible in LAYERS:
-        path = os.path.join(DATAPATH, filename)
+        path = _local_copy(filename, args.refresh)
         layer = QgsRasterLayer(path, name)
         if not layer.isValid():
             raise SystemExit(f"cannot load {path}")
@@ -112,6 +135,9 @@ def main():
         node.setItemVisibilityChecked(visible)
         print(f"added {name:28s} <- {filename}")
 
+    # Store sources relative to the project file, which now sits next to the
+    # tifs, so the paths survive a clone onto another machine.
+    project.writeEntryBool("Paths", "/Absolute", False)
     project.write(OUT)
     app.exitQgis()
     print(f"wrote {OUT}")
