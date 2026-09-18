@@ -8,8 +8,8 @@ from tqdm import tqdm
 from multiprocessing import Pool
 from os.path import join
 import random
+import datetime
 from paths import DATAPATH
-from os.path import jon
 
 # Load the MODIS phenology data
 variables_of_interest = ["Onset_Greenness_Maximum", "Onset_Greenness_Decrease"]
@@ -25,6 +25,23 @@ PARAMETER["longitude_of_center",0], \
 PARAMETER["false_easting",0], \
 PARAMETER["false_northing",0], \
 UNIT["Meter",1]]""")
+
+
+def _set_range(inter, ti, yi, xi, start, end):
+    """Mark days [start, end) of a pixel-year as in-season, clipped to the calendar year.
+
+    Needed once the year offset is correct: derived dates now legitimately fall outside
+    [0, 366) (a cycle-2 senescence can land in the following January), and a bare
+    `inter[..., start:end] = 1` handles that silently and wrongly -- a negative start
+    indexes from the end of the axis, and start > 366 writes nothing at all.
+    Returns True if anything was marked.
+    """
+    start = max(0, min(int(start), 366))
+    end = max(0, min(int(end), 366))
+    if end <= start:
+        return False
+    inter[ti, yi, xi, start:end] = 1
+    return True
 
 
 def process_chunk(inp):
@@ -49,10 +66,17 @@ def process_chunk(inp):
 
     # compute the offset dates as per the documentation
     # and reshape for future broadcasting
-    offset_dates = np.array(
-        list(
-            map(lambda x: -366 * (int(x.split("_")[0]) - 2000),
-                chunk.time.values))).reshape((20, 1, 1))
+    #
+    # The layers are days since 2000-01-01, so converting them to day-of-year means
+    # subtracting the real number of days from 2000-01-01 to Jan 1 of that year --
+    # NOT 366 * (year - 2000), which over-subtracts by 9 d in 2013 growing to 16 d in
+    # 2022 (~0.75 d/yr). That drift both biased every date early and smeared the
+    # 10-year composite: in central Germany the true peak-greenness DOY is 152 in both
+    # 2013 and 2022, but the old formula returned 143 and 136.
+    offset_dates = np.array([
+        -(datetime.date(int(t.split("_")[0]), 1, 1) - datetime.date(2000, 1, 1)).days
+        for t in chunk.time.values
+    ]).reshape((20, 1, 1))
 
     # get bounds and switch from center coord to actual pixel bounds
     pixel_size_x = chunk.x[1] - chunk.x[0]
@@ -90,7 +114,7 @@ def process_chunk(inp):
         end = int(onset_dec[ti * 2, yi, xi])
 
         # set for the range
-        inter[ti, yi, xi, start:end] = 1
+        _set_range(inter, ti, yi, xi, start, end)
 
     # Case 1B else -> end value = 366
     mask_case_1B = nan_mask_onset_max[::2, :, :] & (
@@ -100,7 +124,7 @@ def process_chunk(inp):
         end = 366
 
         # set for the range
-        inter[ti, yi, xi, start:end] = 1
+        _set_range(inter, ti, yi, xi, start, end)
 
     # Case 2 onsetdec is non nan and smaller than onsetmax -> end value = onsetdec, start value = 0
     mask_case_2 = nan_mask_onset_dec[::2] & (
@@ -110,7 +134,7 @@ def process_chunk(inp):
         end = int(onset_dec[ti * 2, yi, xi])
 
         # set for the range
-        inter[ti, yi, xi, start:end] = 1
+        _set_range(inter, ti, yi, xi, start, end)
 
     # for data cycle 2
     # Case 3 onsetmax is not nan -> start value = onsetmax
@@ -122,17 +146,19 @@ def process_chunk(inp):
         end = int(onset_dec[ti * 2 + 1, yi, xi])
 
         # set for the range
-        inter[ti, yi, xi, start:end] = 1
+        _set_range(inter, ti, yi, xi, start, end)
 
     # Case 3B else -> end value = 365
-    mask_case_1B = nan_mask_onset_max[1::2, :, :] & (
+    # (was reading onset_max[ti * 2], i.e. cycle 1's greenup date, while masking on
+    # cycle 2; and shadowed mask_case_1B so the cycle-1 mask was overwritten)
+    mask_case_3B = nan_mask_onset_max[1::2, :, :] & (
         ~nan_mask_onset_dec[1::2, :, :])
-    for ti, yi, xi in zip(*np.where(mask_case_1B)):
-        start = int(onset_max[ti * 2, yi, xi])
+    for ti, yi, xi in zip(*np.where(mask_case_3B)):
+        start = int(onset_max[ti * 2 + 1, yi, xi])
         end = 366
 
         # set for the range
-        inter[ti, yi, xi, start:end] = 1
+        _set_range(inter, ti, yi, xi, start, end)
 
     # 2 sum vectors across time and space dimensions
     return (y, x, np.sum(inter, axis=(0, 1, 2)))
@@ -196,8 +222,13 @@ def index_generator():
                 # ymax = total_ymin + (modis_y_size - y + aggregation_factor) * pixel_size_y_agg
                 # win = windows.from_bounds(xmin, ymin, xmax, ymax, dr.transform)
 
+                # The zarr y axis ascends northward while the forest-mask GeoTIFF is
+                # north-up, so 500 m zarr row j lives at tif row 33599 - j and a window
+                # covering zarr rows [y, y+20) starts at tif row 33600 - y - 20.
+                # Without the -aggregation_factor the mask was read one full 10 km cell
+                # too far south (and at y=0 the window fell off the raster entirely).
                 coloff = x
-                rowoff = modis_y_size - y
+                rowoff = modis_y_size - y - aggregation_factor
                 win = windows.Window(col_off=coloff,
                                      row_off=rowoff,
                                      width=aggregation_factor,

@@ -1,3 +1,5 @@
+import argparse
+
 import xarray as xr
 import matplotlib.pyplot as plt
 import numpy as np
@@ -6,17 +8,30 @@ import seaborn as sns
 from paths import DATAPATH
 from os.path import join
 
+# --factor 4 (default) reproduces the shipped 40 km product; --factor 1 runs the same
+# recipe on the native 10 km grid, for comparing what the 4x4 aggregation costs.
+parser = argparse.ArgumentParser()
+parser.add_argument("--factor", type=int, default=4,
+                    help="spatial downsample factor from the 10 km grid (default 4 -> 40 km)")
+args = parser.parse_args()
+factor = args.factor
+res_km = 10 * factor
+suffix = "" if factor == 4 else f"_{res_km}km"
+
 da = xr.open_zarr(join(DATAPATH, "modispheno_aggregated.zarr")).phenology
 print("loading data...")
 x = da.load().to_numpy()
 x.shape
 
-print("resampling...")
-# downsample by factor 4 --> from 10km to 40km
-factor = 4
+print(f"resampling... factor {factor} -> {res_km} km")
 x_down = x.reshape(x.shape[0] // factor, factor, x.shape[1] // factor, factor,
                    x.shape[2])
-x_down = x_down.sum(axis=(1, 3))
+# v3: nansum, not sum. Plain sum propagates NaN, so a 40km block went NaN if ANY of its
+# 16 sub-cells was NaN instead of only if all were -- dropping every coastal/fragmented
+# block and forcing it to be nearest-neighbour filled from far away (39% of blocks with
+# at least one valid sub-cell).
+all_nan_block = np.isnan(x_down).all(axis=(1, 3, 4))
+x_down = np.nansum(x_down, axis=(1, 3))
 
 # extract start, end, and middle from count curves
 thresh = ((np.max(x_down, axis=2, keepdims=True) - np.min(x_down, axis=2, keepdims=True)) * 0.5) + np.min(x_down, axis=2, keepdims=True)
@@ -71,7 +86,9 @@ def get_cycle(arr):
 
 print("extracting dates...")
 cycle_dates = np.apply_along_axis(func1d=get_cycle, axis=2, arr=binmap)
-cycle_dates[np.isnan(x_down).all(axis=2)] = np.nan
+# must follow the nansum above: nansum returns 0 for an all-NaN block, never NaN, so the
+# no-data test has to come from the pre-aggregation array instead of from x_down.
+cycle_dates[all_nan_block] = np.nan
 
 print("interpolating...")
 # Interpolate missing values
@@ -116,26 +133,20 @@ for i in range(3):
     axes[i * 2].axis("off")
     axes[i * 2 + 1].axis("off")
 fig.tight_layout()
-fig.savefig("phenology_dates_v2.png")
+fig.savefig(f"phenology_dates_v3{suffix}.png")
 
 # save it as zarr
-inresx = (da.x[1] - da.x[0]).item()
-inresy = (da.y[1] - da.y[0]).item()
-
-inminx = (da.x.min() - inresx / 2).item()
-inminy = (da.y.min() - inresy / 2).item()
-inmaxx = (da.x.max() - inresx / 2).item()
-inmaxy = (da.y.max() - inresy / 2).item()
-
-outresx = inresx * factor
-outresy = inresy * factor
+# Output cell centres are the mean of the input centres each block covers. This is exact
+# for any factor and reproduces the shipped 40 km coordinates bit for bit; the previous
+# arange construction used `da.x.max() - inresx / 2` where the extent needs `+ inresx / 2`,
+# which happened to cancel at factor 4 but yields 4319 instead of 4320 columns at factor 1.
+outx = da.x.values[:(len(da.x) // factor) * factor].reshape(-1, factor).mean(axis=1)
+outy = da.y.values[:(len(da.y) // factor) * factor].reshape(-1, factor).mean(axis=1)
 
 print("saving...")
 daout = xr.DataArray(data=np.concatenate([cycle_dates, cin], axis=2),
-                     coords=dict(y=np.arange(inminy + outresy / 2,
-                                             inmaxy + outresy / 2, outresy),
-                                 x=np.arange(inminx + outresx / 2,
-                                             inmaxx + outresx / 2, outresx),
+                     coords=dict(y=outy,
+                                 x=outx,
                                  var=[
                                      "start", "end", "middle", "start_interp",
                                      "end_interp", "middle_interp"
@@ -143,4 +154,4 @@ daout = xr.DataArray(data=np.concatenate([cycle_dates, cin], axis=2),
                      dims=["y", "x", "var"])
 
 daout.rename("phenology40km").to_zarr(
-    join(DATAPATH, "modis_pheno_processed_v2.zarr"))
+    join(DATAPATH, f"modis_pheno_processed_v3{suffix}.zarr"))
