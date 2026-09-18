@@ -8,7 +8,7 @@ wrapped onto day 1..366 so the first and last colour are the same.
 
 Every version is loaded on `middle_interp` (band 6), the variable the inference
 date is taken from. v5 and v3 at 10 km are visible; the 40 km stores of v2 (what
-inference uses today), v3, v4 and v5 are there but switched off, as is the raw
+inference uses today), v3 and v5 are there but switched off, as is the raw
 `middle` band (band 3, NaN where MODIS derived no cycle) which shows what is
 measured rather than nearest-filled.
 
@@ -70,7 +70,6 @@ LAYERS = [
     ("modis_pheno_processed_v5_10km.tif", 6, "v5 10 km - middle_interp", True),
     ("modis_pheno_processed_v3_10km.tif", 6, "v3 10 km - middle_interp", True),
     ("modis_pheno_processed_v5.tif", 6, "v5 40 km - middle_interp", False),
-    ("modis_pheno_processed_v4.tif", 6, "v4 40 km - middle_interp", False),
     ("modis_pheno_processed_v3.tif", 6, "v3 40 km - middle_interp", False),
     ("modis_pheno_processed_v2.tif", 6, "v2 40 km - middle_interp (in use today)", False),
     ("modis_pheno_processed_v5_10km.tif", 3, "v5 10 km - middle (raw)", False),

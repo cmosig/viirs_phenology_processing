@@ -4,12 +4,6 @@ For every 10 km cell this counts, per day of year, how many forested pixel-years
 had that day inside a growing season, from Onset_Greenness_Maximum (greenup) and
 Onset_Greenness_Decrease (senescence) of both MODIS cycles.
 
-Two composites are written in one pass so the effect of the New Year wrap can be
-measured on its own:
-  --out-clip   a season crossing 31 December is cut at day 366 (historical)
-  --out-wrap   its tail is wrapped onto the start of the same composite year
-They differ in nothing else.
-
 The source cube is read tile by tile. Its chunks are (1, 2400, 2400), so the old
 per-10-km-cell reads decompressed a whole 2400x2400 chunk for each 20x20 window;
 one tile now covers 120x120 cells and every chunk is touched exactly once. The
@@ -76,10 +70,8 @@ pixel_size_y_agg = (total_ymax - total_ymin) / modis_y_size_agg
 
 def _parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out-wrap", default="modispheno_aggregated_v5.zarr",
-                        help="composite with the New Year wrap (default: %(default)s)")
-    parser.add_argument("--out-clip", default="modispheno_aggregated_v4.zarr",
-                        help="composite clipping at day 366 (default: %(default)s)")
+    parser.add_argument("--out", default="modispheno_aggregated_v5.zarr",
+                        help="output zarr under DATAPATH (default: %(default)s)")
     parser.add_argument("--workers", type=int, default=48,
                         help="worker processes (default: %(default)s)")
     parser.add_argument("--limit", type=int, default=None,
@@ -102,19 +94,16 @@ def day_offsets(time_labels):
     ])
 
 
-def segments(start, end, wrap):
+def segments(start, end):
     """Split [start, end) into day-of-year segments; empty ones have e <= s.
 
     Derived dates legitimately fall outside [0, 366): a cycle peaking in November
     and senescing the following February becomes start=324, end=406 against 1 Jan
     of the layer's year, and a greenup in the previous December comes out negative.
-    Clipping loses the January half of such a season; the composite is a
-    day-of-year histogram, i.e. cyclic, so `wrap` puts that tail at the start of
-    the same year instead. Two segments are enough: a season is at most a year.
+    Clipping at the year boundary would drop the January half of such a season;
+    the composite is a day-of-year histogram, i.e. cyclic, so the tail goes to the
+    start of the same year. Two segments are enough: a season is at most a year.
     """
-    if not wrap:
-        return (np.clip(start, 0, DAYS), np.clip(end, 0, DAYS),
-                np.zeros_like(start), np.zeros_like(start))
     length = np.minimum(end - start, DAYS)
     first = np.mod(start, DAYS)
     stop = first + length
@@ -173,17 +162,16 @@ def cycle_intervals(onset_max, onset_dec, cycle_one):
 
 
 def tile_counts(reader, y0, x0, forest, time_labels):
-    """Per-cell day-of-year counts for one tile, for both variants.
+    """Per-cell day-of-year counts for one tile.
 
-    Returns (clip, wrap, has_source); cells without any source data stay NaN.
+    Returns (counts, has_source); cells without source data or forest stay NaN.
     """
     offsets = day_offsets(time_labels)
     cell = np.repeat(np.repeat(
         np.arange(N_CELLS, dtype=np.int32).reshape(TILE_CELLS, TILE_CELLS),
         aggregation_factor, axis=0), aggregation_factor, axis=1).ravel()
 
-    diffs = {variant: np.zeros((N_CELLS, DAYS + 1), dtype=np.int32)
-             for variant in ("clip", "wrap")}
+    diff = np.zeros((N_CELLS, DAYS + 1), dtype=np.int32)
     has_source = np.zeros(N_CELLS, dtype=bool)
     # A cell without a single forested pixel is left empty rather than written as
     # zeros: a flat curve has no cycle to extract, and the per-cell version never
@@ -220,43 +208,37 @@ def tile_counts(reader, y0, x0, forest, time_labels):
         start_2, end_2 = start_2.ravel(), end_2.ravel()
         both = valid_1 & valid_2
 
-        for variant, wrap in (("clip", False), ("wrap", True)):
-            diff = diffs[variant]
-            seg_1 = segments(start_1, end_1, wrap)
-            seg_2 = segments(start_2, end_2, wrap)
-            for start, end in ((seg_1[0], seg_1[1]), (seg_1[2], seg_1[3])):
-                add_intervals(diff, cell[valid_1], start[valid_1], end[valid_1], 1)
-            for start, end in ((seg_2[0], seg_2[1]), (seg_2[2], seg_2[3])):
-                add_intervals(diff, cell[valid_2], start[valid_2], end[valid_2], 1)
-            # The two cycles of one pixel-year are a union, not a sum: a day both
-            # of them cover must not be counted twice.
-            if both.any():
-                for a_start, a_end in ((seg_1[0], seg_1[1]), (seg_1[2], seg_1[3])):
-                    for b_start, b_end in ((seg_2[0], seg_2[1]), (seg_2[2], seg_2[3])):
-                        add_intervals(diff, cell[both],
-                                      np.maximum(a_start, b_start)[both],
-                                      np.minimum(a_end, b_end)[both], -1)
+        seg_1 = segments(start_1, end_1)
+        seg_2 = segments(start_2, end_2)
+        for start, end in ((seg_1[0], seg_1[1]), (seg_1[2], seg_1[3])):
+            add_intervals(diff, cell[valid_1], start[valid_1], end[valid_1], 1)
+        for start, end in ((seg_2[0], seg_2[1]), (seg_2[2], seg_2[3])):
+            add_intervals(diff, cell[valid_2], start[valid_2], end[valid_2], 1)
+        # The two cycles of one pixel-year are a union, not a sum: a day both of
+        # them cover must not be counted twice.
+        if both.any():
+            for a_start, a_end in ((seg_1[0], seg_1[1]), (seg_1[2], seg_1[3])):
+                for b_start, b_end in ((seg_2[0], seg_2[1]), (seg_2[2], seg_2[3])):
+                    add_intervals(diff, cell[both],
+                                  np.maximum(a_start, b_start)[both],
+                                  np.minimum(a_end, b_end)[both], -1)
 
     has_source &= has_forest
-    counts = {}
-    for variant, diff in diffs.items():
-        cumulative = np.cumsum(diff, axis=1)[:, :DAYS].astype(np.float32)
-        cumulative[~has_source] = np.nan
-        counts[variant] = cumulative.reshape(TILE_CELLS, TILE_CELLS, DAYS)
-    return counts["clip"], counts["wrap"], has_source
+    counts = np.cumsum(diff, axis=1)[:, :DAYS].astype(np.float32)
+    counts[~has_source] = np.nan
+    return counts.reshape(TILE_CELLS, TILE_CELLS, DAYS), has_source
 
 
 _state = {}
 
 
-def init_worker(out_clip, out_wrap):
+def init_worker(out):
     dataset = xr.open_zarr(join(DATAPATH, "modispheno.zarr"),
                            chunks=None)[variables_of_interest]
     _state["dataset"] = dataset
     _state["time_labels"] = list(dataset.time.values)
     _state["mask"] = rasterio.open(FOREST_MASK_PATH)
-    _state["clip"] = zarr.open(join(DATAPATH, out_clip), mode="r+")["phenology"]
-    _state["wrap"] = zarr.open(join(DATAPATH, out_wrap), mode="r+")["phenology"]
+    _state["out"] = zarr.open(join(DATAPATH, out), mode="r+")["phenology"]
 
 
 def read_window(var, t, y0, x0):
@@ -282,15 +264,14 @@ def process_tile(tile):
     if not forest.any():
         return y0, x0, 0
 
-    clip, wrap, has_source = tile_counts(read_window, y0, x0, forest,
-                                         _state["time_labels"])
+    counts, has_source = tile_counts(read_window, y0, x0, forest,
+                                      _state["time_labels"])
     if not has_source.any():
         return y0, x0, 0
 
     ys = slice(y0 // aggregation_factor, y0 // aggregation_factor + TILE_CELLS)
     xs = slice(x0 // aggregation_factor, x0 // aggregation_factor + TILE_CELLS)
-    _state["clip"][ys, xs, :] = clip
-    _state["wrap"][ys, xs, :] = wrap
+    _state["out"][ys, xs, :] = counts
     return y0, x0, int(has_source.sum())
 
 
@@ -323,9 +304,8 @@ def create_store(path):
 
 def main():
     args = _parse_args()
-    for name in (args.out_clip, args.out_wrap):
-        create_store(join(DATAPATH, name))
-        print(f"created {name}")
+    create_store(join(DATAPATH, args.out))
+    print(f"created {args.out}")
 
     tiles = [(y, x) for y in range(0, modis_y_size, TILE)
              for x in range(0, modis_x_size, TILE)]
@@ -333,9 +313,8 @@ def main():
         tiles = tiles[:args.limit]
 
     cells = 0
-    with Pool(args.workers,
-              initializer=init_worker,
-              initargs=(args.out_clip, args.out_wrap)) as pool:
+    with Pool(args.workers, initializer=init_worker,
+              initargs=(args.out,)) as pool:
         for _, _, n in tqdm(pool.imap_unordered(process_tile, tiles),
                             total=len(tiles),
                             unit="tile"):
