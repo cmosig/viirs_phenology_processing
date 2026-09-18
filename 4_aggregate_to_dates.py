@@ -13,12 +13,16 @@ from os.path import join
 parser = argparse.ArgumentParser()
 parser.add_argument("--factor", type=int, default=4,
                     help="spatial downsample factor from the 10 km grid (default 4 -> 40 km)")
+parser.add_argument("--aggregate", default="modispheno_aggregated.zarr",
+                    help="input composite from step 3 (default: %(default)s)")
+parser.add_argument("--version", default="v3",
+                    help="version tag of the output store and figure (default: %(default)s)")
 args = parser.parse_args()
 factor = args.factor
 res_km = 10 * factor
 suffix = "" if factor == 4 else f"_{res_km}km"
 
-da = xr.open_zarr(join(DATAPATH, "modispheno_aggregated.zarr")).phenology
+da = xr.open_zarr(join(DATAPATH, args.aggregate)).phenology
 print("loading data...")
 x = da.load().to_numpy()
 x.shape
@@ -133,7 +137,7 @@ for i in range(3):
     axes[i * 2].axis("off")
     axes[i * 2 + 1].axis("off")
 fig.tight_layout()
-fig.savefig(f"phenology_dates_v3{suffix}.png")
+fig.savefig(f"phenology_dates_{args.version}{suffix}.png")
 
 # save it as zarr
 # Output cell centres are the mean of the input centres each block covers. This is exact
@@ -154,4 +158,4 @@ daout = xr.DataArray(data=np.concatenate([cycle_dates, cin], axis=2),
                      dims=["y", "x", "var"])
 
 daout.rename("phenology40km").to_zarr(
-    join(DATAPATH, f"modis_pheno_processed_v3{suffix}.zarr"))
+    join(DATAPATH, f"modis_pheno_processed_{args.version}{suffix}.zarr"))

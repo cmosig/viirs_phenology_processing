@@ -1,3 +1,4 @@
 qgis/phenology_v3_attachments.zip
 __pycache__
 *.aux.xml
+*~

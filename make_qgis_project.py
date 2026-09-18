@@ -6,10 +6,11 @@ split the southern growing season in half. The ramp below is matplotlib's
 `twilight`, which is cyclic and perceptually uniform, sampled at 13 stops and
 wrapped onto day 1..366 so the first and last colour are the same.
 
-Both stores are loaded on `middle_interp` (band 6), the variable the inference
-date is taken from, with the 10 km store on top. The raw `middle` band (band 3,
-NaN where MODIS derived no cycle) is added below, switched off, to see what is
-measured and what is nearest-filled.
+Every version is loaded on `middle_interp` (band 6), the variable the inference
+date is taken from. v5 and v3 at 10 km are visible; the 40 km stores of v2 (what
+inference uses today), v3, v4 and v5 are there but switched off, as is the raw
+`middle` band (band 3, NaN where MODIS derived no cycle) which shows what is
+measured rather than nearest-filled.
 
 The GeoTIFFs are copied next to the project inside `qgis/` (6 MB for both) and
 referenced by bare filename, so a clone of this repo opens on any machine. They
@@ -38,7 +39,7 @@ from paths import DATAPATH
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 QGIS_DIR = os.path.join(HERE, "qgis")
-OUT = os.path.join(QGIS_DIR, "phenology_v3.qgs")
+OUT = os.path.join(QGIS_DIR, "phenology.qgs")
 
 # matplotlib twilight, 13 stops, first == last
 TWILIGHT = [
@@ -66,10 +67,14 @@ DOY_MIN, DOY_MAX = 1, 366
 
 # (file, band, layer name, visible)
 LAYERS = [
+    ("modis_pheno_processed_v5_10km.tif", 6, "v5 10 km - middle_interp", True),
     ("modis_pheno_processed_v3_10km.tif", 6, "v3 10 km - middle_interp", True),
-    ("modis_pheno_processed_v3.tif", 6, "v3 40 km - middle_interp", True),
+    ("modis_pheno_processed_v5.tif", 6, "v5 40 km - middle_interp", False),
+    ("modis_pheno_processed_v4.tif", 6, "v4 40 km - middle_interp", False),
+    ("modis_pheno_processed_v3.tif", 6, "v3 40 km - middle_interp", False),
+    ("modis_pheno_processed_v2.tif", 6, "v2 40 km - middle_interp (in use today)", False),
+    ("modis_pheno_processed_v5_10km.tif", 3, "v5 10 km - middle (raw)", False),
     ("modis_pheno_processed_v3_10km.tif", 3, "v3 10 km - middle (raw)", False),
-    ("modis_pheno_processed_v3.tif", 3, "v3 40 km - middle (raw)", False),
 ]
 
 
@@ -121,7 +126,7 @@ def main():
     app.initQgis()
 
     project = QgsProject.instance()
-    project.setTitle("MODIS phenology v3 - day of year")
+    project.setTitle("MODIS phenology v2-v5 - day of year")
     root = project.layerTreeRoot()
 
     for filename, band, name, visible in LAYERS:
