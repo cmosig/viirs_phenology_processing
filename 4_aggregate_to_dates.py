@@ -15,6 +15,10 @@ parser.add_argument("--factor", type=int, default=4,
                     help="spatial downsample factor from the 10 km grid (default 4 -> 40 km)")
 parser.add_argument("--aggregate", default="modispheno_aggregated.zarr",
                     help="input composite from step 3 (default: %(default)s)")
+parser.add_argument("--min-pixel-years", type=int, default=200,
+                    help=("cells whose season is carried by fewer than this many "
+                          "pixel-years are left to the interpolation (default: "
+                          "%(default)s; see the note in the code)"))
 parser.add_argument("--version", default="v3",
                     help="version tag of the output store and figure (default: %(default)s)")
 args = parser.parse_args()
@@ -93,6 +97,24 @@ cycle_dates = np.apply_along_axis(func1d=get_cycle, axis=2, arr=binmap)
 # must follow the nansum above: nansum returns 0 for an all-NaN block, never NaN, so the
 # no-data test has to come from the pre-aggregation array instead of from x_down.
 cycle_dates[all_nan_block] = np.nan
+
+# A 10 km cell holds at most 400 forested pixels x 10 years; a coastal or
+# fragmented one holds a handful, and a date read off a curve built from a
+# handful of pixel-years is unstable -- these are the isolated specks along
+# coastlines. Subsampling well-sampled cells (>=2000 pixel-years, 120 cells over
+# 4 tiles, 15 draws each) and comparing against their own full-sample date gives
+# the 95th percentile of the sampling error:
+#     5 px-yrs: 82 d   20: 27 d   50: 13 d   100: 8 d   200: 5 d   400: 3 d
+# The date is only ever used to pick a 7-day composite, so the threshold is set
+# where that error falls below the composite step: 200 pixel-years (p95 = 5 d).
+# Below it the cell is dropped and filled by the interpolation below, which is
+# what happens to a cell with no measured cycle at all.
+sparse = np.nanmax(x_down, axis=2) < args.min_pixel_years
+cycle_dates[sparse & ~all_nan_block] = np.nan
+print(f"dropped {int((sparse & ~all_nan_block).sum()):,} cells with fewer than "
+      f"{args.min_pixel_years} pixel-years "
+      f"({100 * (sparse & ~all_nan_block).sum() / max((~all_nan_block).sum(), 1):.1f}% "
+      f"of the measured cells)")
 
 print("interpolating...")
 # Interpolate missing values
