@@ -6,11 +6,12 @@ split the southern growing season in half. The ramp below is matplotlib's
 `twilight`, which is cyclic and perceptually uniform, sampled at 13 stops and
 wrapped onto day 1..366 so the first and last colour are the same.
 
-Every version is loaded on `middle_interp` (band 6), the variable the inference
-date is taken from. v5 and v3 at 10 km are visible; the 40 km stores of v2 (what
-inference uses today), v3 and v5 are there but switched off, as is the raw
-`middle` band (band 3, NaN where MODIS derived no cycle) which shows what is
-measured rather than nearest-filled.
+The raw `middle` band (band 3) is what the layers show by default: NaN wherever
+MODIS derived no cycle, so gaps stay visible instead of being papered over. The
+`middle_interp` band (band 6), which is what the inference date is actually read
+from, carries the same values plus a nearest-valid fill and is loaded below,
+switched off. v5 is visible at both resolutions; v2 (what inference uses today)
+and v3 are there for comparison.
 
 The GeoTIFFs are copied next to the project inside `qgis/` (6 MB for both) and
 referenced by bare filename, so a clone of this repo opens on any machine. They
@@ -67,13 +68,15 @@ DOY_MIN, DOY_MAX = 1, 366
 
 # (file, band, layer name, visible)
 LAYERS = [
-    ("modis_pheno_processed_v5_10km.tif", 6, "v5 10 km - middle_interp", True),
-    ("modis_pheno_processed_v3_10km.tif", 6, "v3 10 km - middle_interp", True),
+    ("modis_pheno_processed_v5_10km.tif", 3, "v5 10 km - middle (measured)", True),
+    ("modis_pheno_processed_v5.tif", 3, "v5 40 km - middle (measured)", True),
+    ("modis_pheno_processed_v3_10km.tif", 3, "v3 10 km - middle (measured)", False),
+    ("modis_pheno_processed_v3.tif", 3, "v3 40 km - middle (measured)", False),
+    ("modis_pheno_processed_v2.tif", 3, "v2 40 km - middle (measured, in use today)", False),
+    ("modis_pheno_processed_v5_10km.tif", 6, "v5 10 km - middle_interp", False),
     ("modis_pheno_processed_v5.tif", 6, "v5 40 km - middle_interp", False),
-    ("modis_pheno_processed_v3.tif", 6, "v3 40 km - middle_interp", False),
+    ("modis_pheno_processed_v3_10km.tif", 6, "v3 10 km - middle_interp", False),
     ("modis_pheno_processed_v2.tif", 6, "v2 40 km - middle_interp (in use today)", False),
-    ("modis_pheno_processed_v5_10km.tif", 3, "v5 10 km - middle (raw)", False),
-    ("modis_pheno_processed_v3_10km.tif", 3, "v3 10 km - middle (raw)", False),
 ]
 
 
