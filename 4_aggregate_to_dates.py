@@ -3,7 +3,7 @@ import argparse
 import xarray as xr
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.interpolate import griddata
+from scipy.ndimage import distance_transform_edt
 import seaborn as sns
 from paths import DATAPATH
 from os.path import join
@@ -119,22 +119,26 @@ if args.middle == "peak":
     # would put middle outside [start, end]; following the peak also replaces the
     # length tie-break between two similar cycles with a meaningful one.
     print("placing the date on the peak of the curve...")
-    angle = np.exp(2j * np.pi * np.arange(366) / 366.0)
     tied = x_down >= x_down.max(axis=2, keepdims=True)
-    middle = (np.angle((tied * angle).sum(axis=2)) / (2 * np.pi)) * 366 % 366
     peak_day = x_down.argmax(axis=2).astype(np.int32)
 
-    # walk out from the peak to the edges of its run, in row blocks to bound memory
+    # Walk out from the peak to the edges of the run it sits in, and of the
+    # plateau of days tied with it. Averaging *all* tied days would put the middle
+    # between two equal peaks in different seasons -- outside the run, and
+    # describing neither season -- which matters because the in_pheno gate on the
+    # training orthophotos tests `start <= acquisition <= end` against the same
+    # triple.
     start = np.zeros(binmap.shape[:2], dtype=np.float32)
     end = np.zeros(binmap.shape[:2], dtype=np.float32)
+    middle = np.zeros(binmap.shape[:2], dtype=np.float32)
     found = np.zeros(binmap.shape[:2], dtype=bool)
     # three copies, queried in the middle one: a run is at most a year long, so
     # both its edges are inside the window even when it wraps. Two copies are not
     # enough -- a 309-day run starting in the second copy runs off the end.
     days = np.arange(3 * 366, dtype=np.int16)
-    for lo in range(0, binmap.shape[0], 50):
-        hi = min(lo + 50, binmap.shape[0])
-        tiled = np.concatenate([binmap[lo:hi]] * 3, axis=2)
+    def run_around_peak(mask_block, at):
+        """[first, last+1) of the run of True containing `at`, on a tiled year."""
+        tiled = np.concatenate([mask_block] * 3, axis=2)
         opens = tiled & ~np.roll(tiled, 1, axis=2)
         closes = tiled & ~np.roll(tiled, -1, axis=2)
         run_start = np.maximum.accumulate(
@@ -142,17 +146,24 @@ if args.middle == "peak":
         run_end = np.minimum.accumulate(
             np.where(closes, days + 1, np.int16(3 * 366))[:, :, ::-1],
             axis=2)[:, :, ::-1]
+        first = np.take_along_axis(run_start, at, axis=2)[:, :, 0]
+        last = np.take_along_axis(run_end, at, axis=2)[:, :, 0]
+        return first, last, (first >= 0) & (last < 3 * 366)
+
+    for lo in range(0, binmap.shape[0], 50):
+        hi = min(lo + 50, binmap.shape[0])
         at = (peak_day[lo:hi] + 366)[:, :, None]
-        s = np.take_along_axis(run_start, at, axis=2)[:, :, 0]
-        e = np.take_along_axis(run_end, at, axis=2)[:, :, 0]
-        ok_run = (s >= 0) & (e < 3 * 366)
+        s, e, ok_run = run_around_peak(binmap[lo:hi], at)
+        ps, pe, ok_plateau = run_around_peak(tied[lo:hi], at)
+        # midpoint of the plateau; it lies inside the run by construction
+        mid = (ps + (pe - 1 - ps) / 2.0)
         start[lo:hi] = np.where(ok_run, s % 366, 0)
         end[lo:hi] = np.where(ok_run, e % 366, 0)
+        middle[lo:hi] = np.where(ok_plateau, mid % 366, peak_day[lo:hi])
         found[lo:hi] = ok_run
     # a flat curve has no run at all; those cells keep the old triple and are
     # dropped below anyway if they are too sparse
-    cycle_dates[found] = np.stack(
-        [start, end, middle.astype(np.float32)], axis=2)[found]
+    cycle_dates[found] = np.stack([start, end, middle], axis=2)[found]
     print(f"  peak inside a run for {100 * found.mean():.1f}% of cells")
 # must follow the nansum above: nansum returns 0 for an all-NaN block, never NaN, so the
 # no-data test has to come from the pre-aggregation array instead of from x_down.
@@ -177,17 +188,13 @@ print(f"dropped {int((sparse & ~all_nan_block).sum()):,} cells with fewer than "
       f"of the measured cells)")
 
 print("interpolating...")
-# Interpolate missing values
-cin = cycle_dates.copy()
-for i in range(3):
-    x, y = np.indices(cin[:, :, i].shape)
-
-    cin[:, :, i][np.isnan(cin[:, :, i])] = griddata(
-        (x[~np.isnan(cycle_dates[:, :, i])],
-         y[~np.isnan(cycle_dates[:, :, i])]),
-        cycle_dates[:, :, i][~np.isnan(cycle_dates[:, :, i])],
-        (x[np.isnan(cycle_dates[:, :, i])], y[np.isnan(cycle_dates[:, :, i])]),
-        method="nearest")
+# One nearest donor for the whole triple. Filling start, end and middle
+# independently lets a cell take its start from one neighbour and its middle from
+# another, so the filled season is not a season anyone measured -- and the
+# in_pheno gate reads exactly these three bands.
+missing = np.isnan(cycle_dates[:, :, 0])
+_, donor = distance_transform_edt(missing, return_indices=True)
+cin = cycle_dates[donor[0], donor[1], :]
 
 print("plotting...")
 # plotting

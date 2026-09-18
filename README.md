@@ -65,9 +65,10 @@ difference array plus one cumulative sum, never a per-day write. A global run is
 The 10 km composite is optionally block-summed to 40 km (`--factor 4`, the
 default; `--factor 1` keeps 10 km), then per cell:
 
-1. `middle` = the day the most pixel-years are in leaf (the peak of the curve).
-   Flat-topped curves have many days tied at the maximum, so the tied days are
-   averaged on the circle.
+1. `middle` = the day the most pixel-years are in leaf. Flat-topped curves have
+   many days tied at the maximum, so it is the midpoint of the contiguous
+   plateau of tied days holding the peak — still a day at the maximum, chosen
+   deterministically rather than by which tied day comes first.
 2. threshold the count curve at 50% of its own min-max range and keep the run
    **containing that peak**
 3. `start` = first day of that run, `end` = last
@@ -77,10 +78,18 @@ most likely means a dead tree, so it belongs where a healthy tree is most
 certainly in leaf. Through v5 `middle` was instead the midpoint between `start`
 and `end`, and the run was chosen by length; see [Versions](#versions).
 
+Because the plateau lies inside the run, `middle` is always within
+`[start, end]` — checked over the whole grid, measured and interpolated, at both
+resolutions.
+
 Each of the three is written twice: the raw band (`start`, `end`, `middle`),
 which is NaN wherever no cycle could be derived, and an `_interp` band, which is
 the same values nearest-valid-filled everywhere. Inference reads
-`middle_interp`.
+`middle_interp`. The fill takes the whole triple from one donor cell: filling the
+three independently let a cell draw its start from one neighbour and its middle
+from another, producing a season nobody measured — which matters because
+`extend_metadata.py` tests `start <= acquisition <= end` against these bands to
+decide which orthophotos enter training.
 
 ## What `start`, `end` and `middle` mean
 
