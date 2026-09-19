@@ -178,6 +178,39 @@ which is what pointed at sample size rather than high-frequency noise.
 
 ## Known limitations
 
+- **Evergreen orchards report their understory, not their canopy.** WorldCover
+  class 10 includes olive, citrus and similar plantations, and those pixels pass
+  the >50% tree-cover filter legitimately. But VNP22Q2 keys on EVI2 seasonality,
+  which in an olive grove is driven by the herbaceous understory -- green after
+  the winter rain, dried or mown by May -- while the canopy is evergreen. The
+  product then reports a short spring season with a frequent second cycle
+  instead of a canopy season:
+
+  | | date | maturity -> senescence | season | pixel-years with a 2nd cycle |
+  |---|---|---|---|---|
+  | Jaen, Andalusia (olive) | 60 | 110 -> 136 | 26 d | 350 |
+  | Cordoba belt (olive) | 97 | 86 -> 127 | 41 d | 320 |
+  | Bari coast, Puglia (olive) | 54 | 81 -> 108 | 27 d | 533 |
+  | Sierra de Cazorla (forest) | 174 | 145 -> 236 | 91 d | 18 |
+  | Sila, Calabria (forest) | 190 | 158 -> 235 | 77 d | 18 |
+  | Cevennes (forest) | 195 | 159 -> 234 | 75 d | 58 |
+
+  Cazorla is natural forest 60 km from the Jaen olive belt in the same climate,
+  so this tracks the crop, not latitude, aridity or the coast. It shows up as
+  pale cells along Mediterranean coastlines -- most visibly Puglia and
+  Andalusia, the largest olive region in Europe.
+
+  The mask is not at fault and cannot fix it: these really are tree-cover
+  pixels. Separating them needs the source layers this pipeline ignores --
+  `EVI2_Growing_Season_Area` would be small for a 26-day understory pulse, and
+  `PGQ_*` or `Greenness_Agreement_Growing_Season` may flag the cycles as poor.
+  Untested.
+
+  For the inference date this may still be tolerable, since an olive canopy is
+  evergreen and a bare crown in March is anomalous either way, but `start` and
+  `end` describe the understory there -- which matters for the `in_pheno` gate,
+  as it would accept March acquisitions and reject summer ones at those sites.
+
 - **Weak seasonality breaks the threshold.** The date comes from a 50%-of-range
   crossing, so it needs the curve to have a range. In central Europe the curve
   falls to zero in winter (contrast 1.00 in every cell) and neighbouring cells
