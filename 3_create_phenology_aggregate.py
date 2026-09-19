@@ -70,12 +70,16 @@ pixel_size_y_agg = (total_ymax - total_ymin) / modis_y_size_agg
 
 def _parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", default="modispheno_aggregated_v8.zarr",
+    parser.add_argument("--out", default="modispheno_aggregated_v9.zarr",
                         help="output zarr under DATAPATH (default: %(default)s)")
     parser.add_argument("--workers", type=int, default=48,
                         help="worker processes (default: %(default)s)")
     parser.add_argument("--limit", type=int, default=None,
                         help="stop after this many tiles; for smoke tests")
+    parser.add_argument("--drop-censored", action="store_true",
+                        help=("drop pixel-years with only one of maturity and "
+                              "senescence instead of clipping their season to "
+                              "the observation window (the v8 behaviour)"))
     return parser.parse_args()
 
 
@@ -127,7 +131,7 @@ def add_intervals(diff, cell, start, end, sign):
     diff += sign * flat.reshape(diff.shape).astype(diff.dtype)
 
 
-def cycle_intervals(onset_max, onset_dec):
+def cycle_intervals(onset_max, onset_dec, window=None):
     """The season of one cycle per pixel.
 
     A pixel-year contributes a season only when it has both of its own dates:
@@ -156,6 +160,21 @@ def cycle_intervals(onset_max, onset_dec):
 
     Both cycles are treated the same: a senescence before its own maturity means
     the same thing in either.
+
+    `window` is `(first_day, last_day)` of the layer's observation window on the
+    same day axis. Given it, a pixel-year with only one of the two dates is
+    treated as a *censored* season rather than dropped, which is what it
+    actually is: the product reports no transition outside a fixed window 363
+    days wide that slides one day per year, so a season whose senescence falls
+    past the window end is reported with a maturity and no senescence, and one
+    whose maturity fell before the window start with a senescence and no
+    maturity. Those halves are not missing at random -- in the Amazon the
+    maturity of a censored cycle is a median 294 DOY against 277 for a complete
+    one -- so dropping them takes the late seasons out of the composite.
+    Censored seasons contribute [maturity, window end) and [window start,
+    senescence): everything the sensor actually saw, and nothing it did not.
+    Both edges land within about ten days of each other in early January, where
+    the step down from one and the step up from the other largely cancel.
     """
     have_max = ~np.isnan(onset_max)
     have_dec = ~np.isnan(onset_dec)
@@ -175,16 +194,28 @@ def cycle_intervals(onset_max, onset_dec):
                    np.nan_to_num(onset_dec) + float(DAYS),
                    np.nan_to_num(onset_dec))
 
+    if window is not None:
+        first_day, last_day = window
+        right_censored = have_max & ~have_dec
+        left_censored = have_dec & ~have_max
+        start = np.where(left_censored, float(first_day), start)
+        end = np.where(right_censored, float(last_day), end)
+        valid = valid | right_censored | left_censored
+
     # astype truncates toward zero, as int() did per pixel
     return valid, start.astype(np.int32), end.astype(np.int32)
 
 
-def tile_counts(reader, y0, x0, forest, time_labels):
+def tile_counts(reader, y0, x0, forest, time_labels, layer_windows=None):
     """Per-cell day-of-year counts for one tile.
 
     Returns (counts, has_source); cells without source data or forest stay NaN.
+    `layer_windows` is one (first_day, last_day) per layer, or None to drop censored
+    seasons instead of clipping them to the observation window.
     """
     offsets = day_offsets(time_labels)
+    if layer_windows is None:
+        layer_windows = [None] * len(time_labels)
     cell = np.repeat(np.repeat(
         np.arange(N_CELLS, dtype=np.int32).reshape(TILE_CELLS, TILE_CELLS),
         aggregation_factor, axis=0), aggregation_factor, axis=1).ravel()
@@ -213,9 +244,11 @@ def tile_counts(reader, y0, x0, forest, time_labels):
         masked = {key: np.where(forest, array, np.nan)
                   for key, array in raw.items()}
         valid_1, start_1, end_1 = cycle_intervals(masked[(max_var, t1)] + offsets[t1],
-                                                  masked[(dec_var, t1)] + offsets[t1])
+                                                  masked[(dec_var, t1)] + offsets[t1],
+                                                  layer_windows[t1])
         valid_2, start_2, end_2 = cycle_intervals(masked[(max_var, t2)] + offsets[t2],
-                                                  masked[(dec_var, t2)] + offsets[t2])
+                                                  masked[(dec_var, t2)] + offsets[t2],
+                                                  layer_windows[t2])
         if not (valid_1.any() or valid_2.any()):
             continue
 
@@ -245,14 +278,89 @@ def tile_counts(reader, y0, x0, forest, time_labels):
     return counts.reshape(TILE_CELLS, TILE_CELLS, DAYS), has_source
 
 
+def observation_windows(dataset, time_labels, probe_tiles=(
+        (12000, 26400), (14400, 62400), (4800, 43200), (16800, 26400))):
+    """The (first, last) day each layer can report a transition on.
+
+    VNP22Q2 only derives transitions inside a fixed window, so every date in a
+    layer is clipped to it, and the extreme dates of a well-populated layer are
+    its edges. Cycle 2 is retrieved for only a few percent of pixels, though, so
+    its observed extremes sit well inside the real window -- measuring each
+    layer on its own would hand those layers a window ~70 days too narrow and
+    silently clip censored seasons short.
+
+    Both cycles of a year are derived from the same annual series, so the window
+    belongs to the year. It is taken from the years that reach the full width
+    and extended to the rest by the straight line those years fall on (the
+    window slides by a fixed number of days per year). The fit has to be exact
+    and every observed date has to land inside its window, or this raises.
+    """
+    offsets = day_offsets(time_labels)
+    years = [int(str(t).split("_")[0]) for t in time_labels]
+
+    seen = {}
+    for t in range(len(time_labels)):
+        for y0, x0 in probe_tiles:
+            for var in variables_of_interest:
+                block = dataset[var].isel(time=t, y=slice(y0, y0 + TILE),
+                                          x=slice(x0, x0 + TILE)).values
+                vals = block[~np.isnan(block)]
+                if not vals.size:
+                    continue
+                lo, hi = seen.get(years[t], (np.inf, -np.inf))
+                seen[years[t]] = (min(lo, float(vals.min())),
+                                  max(hi, float(vals.max())))
+    if not seen:
+        raise RuntimeError("no transition dates found in any probe tile")
+
+    width = max(hi - lo for lo, hi in seen.values())
+    full = sorted(y for y, (lo, hi) in seen.items() if hi - lo == width)
+    if len(full) < 2:
+        raise RuntimeError(
+            f"only {len(full)} layer year(s) reach the full {width:.0f}-day window; "
+            "cannot establish how the window slides")
+
+    # the window slides by a constant number of days per year
+    first = full[0]
+    slope = (seen[full[-1]][0] - seen[first][0]) / (full[-1] - first)
+    if slope != int(slope):
+        raise RuntimeError(f"window start moves by {slope} days per year, not an integer")
+    for y in full:
+        expected = seen[first][0] + slope * (y - first)
+        if expected != seen[y][0]:
+            raise RuntimeError(
+                f"window start for {y} is {seen[y][0]}, the straight line through "
+                f"the fully sampled years says {expected}")
+
+    def window_for(year):
+        lo = seen[first][0] + slope * (year - first)
+        return lo, lo + width
+
+    for year, (lo, hi) in seen.items():
+        w_lo, w_hi = window_for(year)
+        if lo < w_lo or hi > w_hi:
+            raise RuntimeError(
+                f"{year} has dates in [{lo:.0f}, {hi:.0f}], outside its window "
+                f"[{w_lo:.0f}, {w_hi:.0f}]")
+
+    print(f"observation window: {width:.0f} days wide, sliding {int(slope)} days "
+          f"per year; {len(full)} of {len(seen)} layer years reach both edges")
+    out = []
+    for t in range(len(time_labels)):
+        w_lo, w_hi = window_for(years[t])
+        out.append((w_lo + offsets[t], w_hi + offsets[t]))
+    return out
+
+
 _state = {}
 
 
-def init_worker(out):
+def init_worker(out, layer_windows):
     dataset = xr.open_zarr(join(DATAPATH, "modispheno.zarr"),
                            chunks=None)[variables_of_interest]
     _state["dataset"] = dataset
     _state["time_labels"] = list(dataset.time.values)
+    _state["layer_windows"] = layer_windows
     _state["mask"] = rasterio.open(FOREST_MASK_PATH)
     _state["out"] = zarr.open(join(DATAPATH, out), mode="r+")["phenology"]
 
@@ -281,7 +389,8 @@ def process_tile(tile):
         return y0, x0, 0
 
     counts, has_source = tile_counts(read_window, y0, x0, forest,
-                                      _state["time_labels"])
+                                      _state["time_labels"],
+                                      _state["layer_windows"])
     if not has_source.any():
         return y0, x0, 0
 
@@ -323,6 +432,14 @@ def main():
     create_store(join(DATAPATH, args.out))
     print(f"created {args.out}")
 
+    probe = xr.open_zarr(join(DATAPATH, "modispheno.zarr"),
+                         chunks=None)[variables_of_interest]
+    layer_windows = (None if args.drop_censored
+                     else observation_windows(probe, list(probe.time.values)))
+    if args.drop_censored:
+        print("--drop-censored: pixel-years with only one of the two dates "
+              "do not contribute")
+
     tiles = [(y, x) for y in range(0, modis_y_size, TILE)
              for x in range(0, modis_x_size, TILE)]
     if args.limit is not None:
@@ -330,7 +447,7 @@ def main():
 
     cells = 0
     with Pool(args.workers, initializer=init_worker,
-              initargs=(args.out,)) as pool:
+              initargs=(args.out, layer_windows)) as pool:
         for _, _, n in tqdm(pool.imap_unordered(process_tile, tiles),
                             total=len(tiles),
                             unit="tile"):
