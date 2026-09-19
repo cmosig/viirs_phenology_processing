@@ -1,4 +1,4 @@
-"""Build a QGIS project showing both v3 phenology GeoTIFFs.
+"""Build a QGIS project showing the phenology date GeoTIFFs.
 
 Day of year is circular -- 31 December sits next to 1 January -- so a ramp with
 two distinct ends would invent a seam in the middle of the boreal winter and
@@ -10,10 +10,11 @@ The raw `middle` band (band 3) is what the layers show by default: NaN wherever
 MODIS derived no cycle, so gaps stay visible instead of being papered over. The
 `middle_interp` band (band 6), which is what the inference date is actually read
 from, carries the same values plus a nearest-valid fill and is loaded below,
-switched off. v6 is visible at both resolutions; v2, the store inference uses today, is there
-for comparison.
+switched off. v7, the store inference reads, is visible at both resolutions;
+v6 and v2 are loaded for comparison. Turning v6 10 km on over the Amazon or
+south-east Asia shows the 1 January band v7 removed.
 
-The GeoTIFFs are copied next to the project inside `qgis/` (6 MB for both) and
+The GeoTIFFs are copied next to the project inside `qgis/` and
 referenced by bare filename, so a clone of this repo opens on any machine. They
 are copied from DATAPATH when missing; --refresh re-copies them.
 
@@ -68,12 +69,14 @@ DOY_MIN, DOY_MAX = 1, 366
 
 # (file, band, layer name, visible)
 LAYERS = [
-    ("modis_pheno_processed_v6_10km.tif", 3, "v6 10 km - middle (measured)", True),
-    ("modis_pheno_processed_v6.tif", 3, "v6 40 km - middle (measured)", True),
-    ("modis_pheno_processed_v2.tif", 3, "v2 40 km - middle (measured, in use today)", False),
+    ("modis_pheno_processed_v7_10km.tif", 3, "v7 10 km - middle (measured)", True),
+    ("modis_pheno_processed_v7.tif", 3, "v7 40 km - middle (measured)", True),
+    ("modis_pheno_processed_v6_10km.tif", 3, "v6 10 km - middle (measured)", False),
+    ("modis_pheno_processed_v2.tif", 3, "v2 40 km - middle (measured)", False),
+    ("modis_pheno_processed_v7_10km.tif", 6, "v7 10 km - middle_interp", False),
+    ("modis_pheno_processed_v7.tif", 6, "v7 40 km - middle_interp", False),
     ("modis_pheno_processed_v6_10km.tif", 6, "v6 10 km - middle_interp", False),
-    ("modis_pheno_processed_v6.tif", 6, "v6 40 km - middle_interp", False),
-    ("modis_pheno_processed_v2.tif", 6, "v2 40 km - middle_interp (in use today)", False),
+    ("modis_pheno_processed_v2.tif", 6, "v2 40 km - middle_interp", False),
 ]
 
 
@@ -125,7 +128,7 @@ def main():
     app.initQgis()
 
     project = QgsProject.instance()
-    project.setTitle("Land-surface phenology v6 - day of year")
+    project.setTitle("Land-surface phenology v7 - day of year")
     root = project.layerTreeRoot()
     crs_set = False
 

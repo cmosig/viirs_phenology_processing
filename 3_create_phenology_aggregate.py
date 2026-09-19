@@ -70,7 +70,7 @@ pixel_size_y_agg = (total_ymax - total_ymin) / modis_y_size_agg
 
 def _parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", default="modispheno_aggregated_v6.zarr",
+    parser.add_argument("--out", default="modispheno_aggregated_v7.zarr",
                         help="output zarr under DATAPATH (default: %(default)s)")
     parser.add_argument("--workers", type=int, default=48,
                         help="worker processes (default: %(default)s)")
@@ -127,14 +127,28 @@ def add_intervals(diff, cell, start, end, sign):
     diff += sign * flat.reshape(diff.shape).astype(diff.dtype)
 
 
-def cycle_intervals(onset_max, onset_dec, cycle_one):
-    """The season of one cycle per pixel, as the documented cases.
+def cycle_intervals(onset_max, onset_dec):
+    """The season of one cycle per pixel.
 
-    Cycle 1: greenup present and senescence after it -> [greenup, senescence);
-    greenup present, senescence missing -> [greenup, 366); senescence present but
-    before greenup, or greenup missing -> [0, senescence).
-    Cycle 2 has the first two cases only, and takes its own greenup as the start --
-    it used to read cycle 1's.
+    maturity present, senescence after it -> [maturity, senescence);
+    maturity present, senescence missing  -> [maturity, 366);
+    maturity present, senescence BEFORE it -> [maturity, senescence + 366), a
+    season that crosses New Year;
+    maturity missing -> no season, the pixel-year does not contribute.
+
+    v7 changed the last two. Through v6 both went to `[0, senescence)`: the
+    wrapping season lost its pre-New-Year half, and a pixel-year with no
+    maturity date at all was given a start it never had. Both anchored an
+    interval on day 0, and in the tropics that is most of them -- 48% of the
+    contributing pixel-years over the Amazon, 34% over Borneo, against 0.3% over
+    Germany. The pile-up put a spike of 42,479 cells at exactly day 0 (a mean
+    day holds 2,192), which the v6 peak rule then read as the mid-season date:
+    4.6% of measured cells, and after the nearest-neighbour fill 9% of the grid,
+    claimed their canopy is fullest on 1 January.
+
+    A missing maturity date leaves no anchor to wrap to, so those pixel-years are
+    now dropped rather than guessed. Both cycles are treated the same: a
+    senescence before its own maturity means the same thing in either.
     """
     have_max = ~np.isnan(onset_max)
     have_dec = ~np.isnan(onset_dec)
@@ -142,20 +156,18 @@ def cycle_intervals(onset_max, onset_dec, cycle_one):
 
     after = np.zeros(onset_max.shape, dtype=bool)
     np.greater(onset_dec, onset_max, out=after, where=both)
+    before = np.zeros(onset_max.shape, dtype=bool)
+    np.less(onset_dec, onset_max, out=before, where=both)
 
     case_a = both & after
     case_b = have_max & ~have_dec
-    valid = case_a | case_b
-    start = np.where(have_max, np.nan_to_num(onset_max), 0.0)
-    end = np.where(case_b, float(DAYS), np.nan_to_num(onset_dec))
+    wrapped = both & before
+    # senescence exactly on maturity is a zero-length season, dropped as before
+    valid = case_a | case_b | wrapped
 
-    if cycle_one:
-        before = np.zeros(onset_max.shape, dtype=bool)
-        np.less(onset_dec, onset_max, out=before, where=both)
-        case_c = have_dec & (before | ~have_max)
-        valid = valid | case_c
-        start = np.where(case_c, 0.0, start)
-        end = np.where(case_c, np.nan_to_num(onset_dec), end)
+    start = np.nan_to_num(onset_max)
+    end = np.where(case_b, float(DAYS), np.nan_to_num(onset_dec))
+    end = np.where(wrapped, np.nan_to_num(onset_dec) + float(DAYS), end)
 
     # astype truncates toward zero, as int() did per pixel
     return valid, start.astype(np.int32), end.astype(np.int32)
@@ -195,11 +207,9 @@ def tile_counts(reader, y0, x0, forest, time_labels):
         masked = {key: np.where(forest, array, np.nan)
                   for key, array in raw.items()}
         valid_1, start_1, end_1 = cycle_intervals(masked[(max_var, t1)] + offsets[t1],
-                                                  masked[(dec_var, t1)] + offsets[t1],
-                                                  True)
+                                                  masked[(dec_var, t1)] + offsets[t1])
         valid_2, start_2, end_2 = cycle_intervals(masked[(max_var, t2)] + offsets[t2],
-                                                  masked[(dec_var, t2)] + offsets[t2],
-                                                  False)
+                                                  masked[(dec_var, t2)] + offsets[t2])
         if not (valid_1.any() or valid_2.any()):
             continue
 

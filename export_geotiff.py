@@ -48,12 +48,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--factor", type=int, default=4,
                     help="4 -> the 40 km store (default), 1 -> the 10 km store")
+    ap.add_argument("--version", default="v7",
+                    help="version tag of the dates store (default: %(default)s)")
     ap.add_argument("--store", default=None, help="explicit zarr name, overrides --factor")
     ap.add_argument("--out", default=None, help="explicit output .tif path")
     args = ap.parse_args()
 
     suffix = "" if args.factor == 4 else f"_{10 * args.factor}km"
-    store = args.store or f"modis_pheno_processed_v3{suffix}.zarr"
+    store = args.store or f"modis_pheno_processed_{args.version}{suffix}.zarr"
     out = args.out or join(DATAPATH, store.replace(".zarr", ".tif"))
 
     da = xr.open_zarr(join(DATAPATH, store)).phenology40km.load()
