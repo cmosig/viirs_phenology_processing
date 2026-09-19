@@ -70,7 +70,7 @@ pixel_size_y_agg = (total_ymax - total_ymin) / modis_y_size_agg
 
 def _parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", default="modispheno_aggregated_v7.zarr",
+    parser.add_argument("--out", default="modispheno_aggregated_v8.zarr",
                         help="output zarr under DATAPATH (default: %(default)s)")
     parser.add_argument("--workers", type=int, default=48,
                         help="worker processes (default: %(default)s)")
@@ -130,25 +130,32 @@ def add_intervals(diff, cell, start, end, sign):
 def cycle_intervals(onset_max, onset_dec):
     """The season of one cycle per pixel.
 
-    maturity present, senescence after it -> [maturity, senescence);
-    maturity present, senescence missing  -> [maturity, 366);
-    maturity present, senescence BEFORE it -> [maturity, senescence + 366), a
-    season that crosses New Year;
-    maturity missing -> no season, the pixel-year does not contribute.
+    A pixel-year contributes a season only when it has both of its own dates:
 
-    v7 changed the last two. Through v6 both went to `[0, senescence)`: the
-    wrapping season lost its pre-New-Year half, and a pixel-year with no
-    maturity date at all was given a start it never had. Both anchored an
-    interval on day 0, and in the tropics that is most of them -- 48% of the
-    contributing pixel-years over the Amazon, 34% over Borneo, against 0.3% over
-    Germany. The pile-up put a spike of 42,479 cells at exactly day 0 (a mean
-    day holds 2,192), which the v6 peak rule then read as the mid-season date:
-    4.6% of measured cells, and after the nearest-neighbour fill 9% of the grid,
-    claimed their canopy is fullest on 1 January.
+    senescence after maturity  -> [maturity, senescence);
+    senescence before maturity -> [maturity, senescence + 366), a season that
+    crosses New Year.
 
-    A missing maturity date leaves no anchor to wrap to, so those pixel-years are
-    now dropped rather than guessed. Both cycles are treated the same: a
-    senescence before its own maturity means the same thing in either.
+    Anything else does not contribute. v6 and earlier had three fallbacks that
+    invented a missing endpoint, and each of them anchored an interval on a year
+    boundary rather than on anything measured:
+
+    * senescence before maturity -> `[0, senescence)`, which threw away the half
+      of the season before New Year;
+    * maturity missing -> `[0, senescence)`, a start the pixel never had;
+    * senescence missing -> `[maturity, 366)`, an end the pixel never had.
+
+    Outside the temperate zone those are most of the data: 58% of the
+    contributing pixel-years over the Amazon, 36% over Borneo, 0.4% over
+    Germany. Their intervals stack on day 0 and day 365, the count curve steps
+    at the year boundary, and the peak rule reads the step as the mid-season
+    date. v6 put 42,479 cells on day 0, 19x what an average day holds. v7
+    removed the first two fallbacks and the pile moved to the other end of the
+    year: 53,977 cells on day 365, 25x the mean. Only dropping all three takes
+    the year boundary out of the histogram, which is what v8 does.
+
+    Both cycles are treated the same: a senescence before its own maturity means
+    the same thing in either.
     """
     have_max = ~np.isnan(onset_max)
     have_dec = ~np.isnan(onset_dec)
@@ -159,15 +166,14 @@ def cycle_intervals(onset_max, onset_dec):
     before = np.zeros(onset_max.shape, dtype=bool)
     np.less(onset_dec, onset_max, out=before, where=both)
 
-    case_a = both & after
-    case_b = have_max & ~have_dec
     wrapped = both & before
     # senescence exactly on maturity is a zero-length season, dropped as before
-    valid = case_a | case_b | wrapped
+    valid = (both & after) | wrapped
 
     start = np.nan_to_num(onset_max)
-    end = np.where(case_b, float(DAYS), np.nan_to_num(onset_dec))
-    end = np.where(wrapped, np.nan_to_num(onset_dec) + float(DAYS), end)
+    end = np.where(wrapped,
+                   np.nan_to_num(onset_dec) + float(DAYS),
+                   np.nan_to_num(onset_dec))
 
     # astype truncates toward zero, as int() did per pixel
     return valid, start.astype(np.int32), end.astype(np.int32)

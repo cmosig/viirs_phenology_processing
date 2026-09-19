@@ -35,10 +35,10 @@ quality flags `PGQ_*` and `GLSP_QC`, and the mid-phase dates. See
 | download | `0_download.sh` | LP DAAC | HDF tiles |
 | to zarr | `1_convert_to_zarr.py` | HDF tiles | `modispheno.zarr` (20, 33600, 86400) |
 | forest mask | `2_aggregate_world_cover.py` | WorldCover | `worldcover_aggregated.tif` (500 m tree-cover fraction) |
-| composite | `3_create_phenology_aggregate.py` | the two above | `modispheno_aggregated_v7.zarr` (1680, 4320, 366) |
-| dates | `4_aggregate_to_dates.py` | composite | `modis_pheno_processed_v7{,_10km}.zarr` |
-| normalise | `SIDE_normalize_curve.py` | composite | `..._v7_normalized.zarr` (uint8 0-255 + `nan_mask`) |
-| gap fill | `fill_modis_phenology_nn.py` (in `sentinel_mortality/scripts/misc/`) | normalised | `..._v7_normalized_filled.zarr` |
+| composite | `3_create_phenology_aggregate.py` | the two above | `modispheno_aggregated_v8.zarr` (1680, 4320, 366) |
+| dates | `4_aggregate_to_dates.py` | composite | `modis_pheno_processed_v8{,_10km}.zarr` |
+| normalise | `SIDE_normalize_curve.py` | composite | `..._v8_normalized.zarr` (uint8 0-255 + `nan_mask`) |
+| gap fill | `fill_modis_phenology_nn.py` (in `sentinel_mortality/scripts/misc/`) | normalised | `..._v8_normalized_filled.zarr` |
 | GeoTIFF | `export_geotiff.py` | any dates store | 6-band `.tif` |
 | QGIS | `make_qgis_project.py` | the tifs | `qgis/phenology.qgs` |
 
@@ -115,46 +115,62 @@ as the shift in mid-season day of year at 170,707 inference-block centroids.
 | v4 -> v5 | a season crossing New Year is wrapped rather than clipped at day 366 | 0 d | 0.4% |
 | v5 -> v6 | `middle` moves to the peak of the curve, and the kept run is the one containing that peak; the whole triple is filled from one donor | 4 d | 10% |
 | v6 -> v7 | a season VIIRS reports as senescence-before-maturity wraps across New Year instead of being clipped to `[0, senescence)`, and a pixel-year with no maturity date no longer contributes a season starting on day 0 | 0 d | 7.9% |
+| v7 -> v8 | a pixel-year with no senescence date no longer contributes a season running to day 366 either: a season now needs both of its own dates | 0 d | 7.4% |
 
-v4 and v5 were measurements, not products: only v7 is kept, and every store
-carries that version. v3, v5 and v7 changed the composite, v6 only step 4. The
-year-offset fix moves the product onto the source dates: central Germany's
-median source maturity is DOY 198, v2/v3 said 181, v6 and v7 say 198. Across six
+v4, v5 and v7 were measurements, not products: only v8 is kept, and every store
+carries that version. v3, v5, v7 and v8 changed the composite, v6 only step 4.
+The year-offset fix moves the product onto the source dates: central Germany's
+median source maturity is DOY 198, v2/v3 said 181, v6 onwards say 198. Across six
 flux and phenology sites, `start` and `end` reproduce the median source maturity
 and senescence within 0-3 days.
 
-### The 1 January pile-up (v7)
+### The year-boundary pile-up (v7, v8)
 
-v5 wrapped a season whose *derived dates* fell outside `[0, 366)`. It did not
-touch the other two fallbacks inside `cycle_intervals`, which both anchored an
-interval on day 0: a cycle whose senescence comes *before* its own maturity --
-which is how VIIRS represents a season crossing New Year -- was clipped to
-`[0, senescence)`, losing the half before New Year; and a pixel-year with no
-maturity date at all was given `[0, senescence)` outright.
+`cycle_intervals` used to carry three fallbacks that invented a missing
+endpoint, and every one of them anchored the interval on a year boundary rather
+than on anything the sensor measured:
 
-Outside the temperate zone those are not edge cases. Of the pixel-years that
-contribute a season:
+1. senescence *before* maturity -- which is how VIIRS represents a season
+   crossing New Year -- was clipped to `[0, senescence)`, throwing away the half
+   of the season before New Year;
+2. maturity missing -> `[0, senescence)`, a start the pixel never had;
+3. senescence missing -> `[maturity, 366)`, an end the pixel never had.
 
-| tile | senescence before maturity | no maturity date | total on day 0 |
+v5 had wrapped a season whose *derived dates* fell outside `[0, 366)`, but left
+all three of these alone. Outside the temperate zone they are not edge cases.
+Of the pixel-years that used to contribute a season:
+
+| tile | senescence before maturity | no maturity date | no senescence date |
 |---|---|---|---|
-| Amazon | 21.2% | 27.2% | **48.3%** |
-| Borneo | 3.0% | 30.7% | **33.7%** |
-| Germany | 0.1% | 0.1% | 0.3% |
+| Amazon | 21.2% | 27.2% | 27.6% |
+| Borneo | 3.0% | 30.7% | 19.6% |
+| Germany | 0.1% | 0.1% | 0.2% |
 
-The composite therefore stepped up sharply at day 0 and decayed from there --
-over Amazonia the curve read 845 on day 0 against 384 on day 365 -- and the v6
-peak rule read that step as the mid-season date. 42,479 cells claimed their
-canopy is fullest on 1 January where an average day holds 2,192: 4.6% of the
-measured cells, and 9% of the grid once the nearest-neighbour fill spread them.
-It reached real training data too: 366 of the 8,181 dated deadtrees
-orthophotos, 90% of them tropical, were dated 1 January.
+Their intervals stack on day 0 and day 365, the count curve steps at the year
+boundary, and the v6 peak rule reads the step as the mid-season date. v6 put
+**42,479** 10 km cells on day 0, 19x what an average day holds -- 4.6% of the
+measured cells, 9% of the grid once the nearest-neighbour fill spread them, and
+366 of the 8,181 dated deadtrees orthophotos, 90% of them tropical.
 
-v7 wraps the first case, to `[maturity, senescence + 366)`, and drops the
-second: a pixel-year with no maturity has no anchor to wrap to, so guessing one
-is worse than leaving it out. Both cycles are treated the same way, since a
-senescence before its own maturity means the same thing in either. The day-0
-spike goes to zero and coverage barely moves -- 67,601 measured 40 km cells
-before, 67,450 after.
+v7 fixed the first case by wrapping it to `[maturity, senescence + 366)` and
+dropped the second. That did not solve the problem, it moved it: with day 0
+cleared, the third fallback showed through and **53,977** cells landed on day
+365, 25x the mean. Only dropping all three takes the year boundary out of the
+histogram, which is what v8 does -- a season needs both of its own dates, and a
+pixel-year missing either does not contribute.
+
+| | day 0 | day 365 | modal day |
+|---|---|---|---|
+| v6 | 42,479 (19.4x) | 0 | 0 |
+| v7 | 0 | 53,977 (24.9x) | 365 |
+| **v8** | **364 (0.2x)** | **182 (0.1x)** | **210 (12x)** |
+
+v8's modal day is 210, the genuine northern-summer peak, and neither end of the
+year is special any more. The cost is the pixel-years that only ever had one
+date: 55.9% of the Amazon's former contributors, 50.4% of Borneo's, 0.5% of
+Germany's. Measured 10 km cells fall from 802,367 to 771,947 (-3.8%); the cells
+that drop out go to the nearest-neighbour fill, which takes a date from a cell
+that did measure a whole season instead of one assembled from a guess.
 
 ### Why the peak (v6)
 
@@ -279,23 +295,23 @@ which is what pointed at sample size rather than high-frequency noise.
 
 ## Running it
 
-Only `modispheno_aggregated_v7_normalized_filled.zarr` is kept zipped, since that
+Only `modispheno_aggregated_v8_normalized_filled.zarr` is kept zipped, since that
 is the one that gets shipped; everything else is read in place. The 10 km dates
 store is small enough that `sentinel_mortality` keeps its own copy under
 `data/phenology/`, so every inference host reads the same product.
 
 ```bash
 python 3_create_phenology_aggregate.py --workers 48            # ~4 min, ~25 GB
-python 4_aggregate_to_dates.py --aggregate modispheno_aggregated_v7.zarr --version v7
-python 4_aggregate_to_dates.py --aggregate modispheno_aggregated_v7.zarr --version v7 --factor 1
+python 4_aggregate_to_dates.py --aggregate modispheno_aggregated_v8.zarr --version v8
+python 4_aggregate_to_dates.py --aggregate modispheno_aggregated_v8.zarr --version v8 --factor 1
 #   --middle threshold reproduces the pre-v6 rule
-python SIDE_normalize_curve.py --aggregate modispheno_aggregated_v7.zarr \
-    --out modispheno_aggregated_v7_normalized.zarr
+python SIDE_normalize_curve.py --aggregate modispheno_aggregated_v8.zarr \
+    --out modispheno_aggregated_v8_normalized.zarr
 python ../sentinel_mortality/scripts/misc/fill_modis_phenology_nn.py \
-    --input  $DATAPATH/modispheno_aggregated_v7_normalized.zarr \
-    --output $DATAPATH/modispheno_aggregated_v7_normalized_filled.zarr
-python export_geotiff.py --version v7               # 40 km
-python export_geotiff.py --version v7 --factor 1    # 10 km
+    --input  $DATAPATH/modispheno_aggregated_v8_normalized.zarr \
+    --output $DATAPATH/modispheno_aggregated_v8_normalized_filled.zarr
+python export_geotiff.py --version v8               # 40 km
+python export_geotiff.py --version v8 --factor 1    # 10 km
 QT_QPA_PLATFORM=offscreen /usr/bin/python3 make_qgis_project.py # system python has PyQGIS
 ```
 
